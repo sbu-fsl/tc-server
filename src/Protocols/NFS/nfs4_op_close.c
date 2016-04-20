@@ -166,18 +166,14 @@ int nfs4_op_close(struct nfs_argop4 *op, compound_data_t *data,
 		return res_CLOSE4->status;
 
 	/* Check stateid correctness and get pointer to state */
-	nfs_status = nfs4_Check_Stateid(&arg_CLOSE4->open_stateid,
-					data->current_entry,
-					&state_found,
-					data,
-					data->minorversion == 0 ?
-					    STATEID_SPECIAL_FOR_CLOSE_40 :
-					    STATEID_SPECIAL_FOR_CLOSE_41,
-					arg_CLOSE4->seqid,
-					data->minorversion == 0,
-					close_tag);
+        nfs_status = nfs4_Check_Stateid(
+            &arg_CLOSE4->open_stateid, data->current_entry, &state_found, data,
+            data->minorversion == 0
+                ? STATEID_SPECIAL_FOR_CLOSE_40 | STATEID_SPECIAL_CURRENT
+                : STATEID_SPECIAL_FOR_CLOSE_41 | STATEID_SPECIAL_CURRENT,
+            arg_CLOSE4->seqid, data->minorversion == 0, close_tag);
 
-	if (nfs_status != NFS4_OK && nfs_status != NFS4ERR_REPLAY) {
+        if (nfs_status != NFS4_OK && nfs_status != NFS4ERR_REPLAY) {
 		res_CLOSE4->status = nfs_status;
 		LogDebug(COMPONENT_STATE, "CLOSE failed nfs4_Check_Stateid");
 		return res_CLOSE4->status;
