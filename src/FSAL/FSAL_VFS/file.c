@@ -225,23 +225,27 @@ static ssize_t spliced_copy(int srcfd, uint64_t src_offset, int dstfd,
 	ssize_t n1;
 	ssize_t n2;
 	ssize_t copied = 0;
+	size_t off1;
+	size_t off2;
 
 	while (copied < count) {
-		n1 = splice(srcfd, &src_offset, pipefd[1], NULL,
+		off1 = src_offset;
+		n1 = splice(srcfd, &off1, pipefd[1], NULL,
 			    MIN(64 * 1024, count - copied),
 			    SPLICE_F_MOVE | SPLICE_F_MORE);
 		if (n1 < 0) {
 			return n1;
 		}
-		src_offset += n1;
 
-		n2 = splice(pipefd[0], NULL, dstfd, &dst_offset, n1,
+		off2 = dst_offset;
+		n2 = splice(pipefd[0], NULL, dstfd, &off2, n1,
 			    SPLICE_F_MOVE | SPLICE_F_MORE);
 		if (n2 < 0) {
 			return n2;
 		}
-		dst_offset += n2;
 
+		src_offset += n2;
+		dst_offset += n2;
 		copied += n2;
 	}
 
