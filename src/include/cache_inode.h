@@ -829,6 +829,12 @@ cache_inode_status_t cache_inode_rdwr(cache_entry_t *entry,
 				      bool *sync,
 				      struct io_info *info);
 
+cache_inode_status_t cache_inode_copy(cache_entry_t *src_entry,
+				      uint64_t src_offset,
+				      cache_entry_t *dst_entry,
+				      uint64_t dst_offset, uint64_t count,
+				      uint64_t *copied);
+
 cache_inode_status_t cache_inode_commit(cache_entry_t *entry, uint64_t offset,
 					size_t count);
 

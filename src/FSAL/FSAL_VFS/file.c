@@ -218,6 +218,72 @@ fsal_status_t vfs_write(struct fsal_obj_handle *obj_hdl,
 	return fsalstat(fsal_error, retval);
 }
 
+static ssize_t spliced_copy(int srcfd, uint64_t src_offset, int dstfd,
+			    uint64_t dst_offset, uint64_t count)
+{
+	int pipefd[2];
+	ssize_t n1;
+	ssize_t n2;
+	ssize_t copied = 0;
+
+	while (copied < count) {
+		n1 = splice(srcfd, &src_offset, pipefd[1], NULL,
+			    MIN(64 * 1024, count - copied),
+			    SPLICE_F_MOVE | SPLICE_F_MORE);
+		if (n1 < 0) {
+			return n1;
+		}
+		src_offset += n1;
+
+		n2 = splice(pipefd[0], NULL, dstfd, &dst_offset, n1,
+			    SPLICE_F_MOVE | SPLICE_F_MORE);
+		if (n2 < 0) {
+			return n2;
+		}
+		dst_offset += n2;
+
+		copied += n2;
+	}
+
+	return n2;
+}
+
+fsal_status_t vfs_copy(struct fsal_obj_handle *src_hdl, uint64_t src_offset,
+		       struct fsal_obj_handle *dst_hdl, uint64_t dst_offset,
+		       uint64_t count, uint64_t *copied)
+{
+	struct vfs_fsal_obj_handle *src_vfs;
+	struct vfs_fsal_obj_handle *dst_vfs;
+	fsal_status_t st;
+
+	src_vfs = container_of(src_hdl, struct vfs_fsal_obj_handle, obj_handle);
+	dst_vfs = container_of(dst_hdl, struct vfs_fsal_obj_handle, obj_handle);
+	if ((size_t)src_vfs < (size_t)dst_vfs) {
+		PTHREAD_RWLOCK_rdlock(&src_hdl->lock);
+		PTHREAD_RWLOCK_rdlock(&dst_hdl->lock);
+	} else {
+		PTHREAD_RWLOCK_rdlock(&dst_hdl->lock);
+		PTHREAD_RWLOCK_rdlock(&src_hdl->lock);
+	}
+
+	*copied = spliced_copy(dst_vfs->u.file.fd, src_offset,
+			       src_vfs->u.file.fd, dst_offset, count);
+	if (*copied < 0) {
+		st = fsalstat(*copied, 0);
+		*copied = 0;
+	}
+
+	if ((size_t)src_vfs < (size_t)dst_vfs) {
+		PTHREAD_RWLOCK_unlock(&dst_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&src_hdl->lock);
+	} else {
+		PTHREAD_RWLOCK_unlock(&src_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&dst_hdl->lock);
+	}
+
+	return st;
+}
+
 /* vfs_commit
  * Commit a file range to storage.
  * for right now, fsync will have to do.

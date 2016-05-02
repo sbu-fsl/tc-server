@@ -348,6 +348,8 @@ int nfs4_op_layoutstats(struct nfs_argop4 *, compound_data_t *,
 
 void nfs4_op_layoutstats_Free(nfs_resop4 *resp);
 
+int nfs4_op_copy(struct nfs_argop4 *, compound_data_t *, struct nfs_resop4 *);
+
 /* @}
  * -- End of NFS protocols functions. --
  */
@@ -454,6 +456,7 @@ void nfs4_op_setclientid_confirm_Free(nfs_resop4 *);
 void nfs4_op_verify_Free(nfs_resop4 *);
 void nfs4_op_write_Free(nfs_resop4 *);
 
+
 void nfs4_op_close_CopyRes(CLOSE4res *, CLOSE4res *);
 void nfs4_op_lock_CopyRes(LOCK4res *, LOCK4res *);
 void nfs4_op_locku_CopyRes(LOCKU4res *, LOCKU4res *);
@@ -480,6 +483,7 @@ void nfs4_op_test_stateid_Free(nfs_resop4 *);
 void nfs4_op_write_Free(nfs_resop4 *);
 void nfs4_op_destroy_clientid_Free(nfs_resop4 *);
 void nfs4_op_reclaim_complete_Free(nfs_resop4 *);
+void nfs4_op_copy_Free(nfs_resop4 *);
 
 void compound_data_Free(compound_data_t *);
 

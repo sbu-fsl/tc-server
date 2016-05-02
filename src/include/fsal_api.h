@@ -1542,6 +1542,26 @@ struct fsal_obj_ops {
 				     size_t *wrote_amount,
 				     bool *fsal_stable,
 				     struct io_info *info);
+
+/**
+ * @brief Copy file content.
+ *
+ * @param[in]     src_hdl      File to copy from
+ * @param[in]     src_offset   Offset start from the source file
+ * @param[in]     dst_hdl      Destination file to copy to
+ * @param[in]     dst_offset   Offset in the dest file
+ * @param[out]    count	       Requested bytes to copy
+ * @param[out]    copied       Bytes successfully copied
+ *
+ * @return CACHE_INODE_SUCCESS or various errors
+ */
+	 fsal_status_t (*copy)(struct fsal_obj_handle *src_hdl,
+			       uint64_t src_offset,
+			       struct fsal_obj_handle *dst_hdl,
+			       uint64_t dst_offset,
+			       uint64_t count,
+			       uint64_t *copied);
+
 /**
  * @brief Seek to data or hole
  *
