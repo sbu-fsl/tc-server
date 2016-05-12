@@ -641,7 +641,7 @@ int nfs4_Compound(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 		opcode = argarray[i].argop;
 
 		/* Handle opcode overflow */
-		if (opcode > LastOpcode[compound4_minor])
+		if (opcode > LastOpcode[compound4_minor] && opcode != NFS4_OP_COPY)
 			opcode = 0;
 
 		if (compound4_minor > 0 && data.session != NULL &&

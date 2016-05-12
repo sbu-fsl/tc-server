@@ -225,8 +225,10 @@ fsal_status_t vfs_copy(struct fsal_obj_handle *src_hdl, uint64_t src_offset,
 {
 	struct vfs_fsal_obj_handle *src_vfs;
 	struct vfs_fsal_obj_handle *dst_vfs;
-	fsal_status_t st;
+	fsal_status_t st = {0, 0};
+	ssize_t ret;
 
+	LogDebug(COMPONENT_FSAL, "vfs_copy: server-side copying");
 	src_vfs = container_of(src_hdl, struct vfs_fsal_obj_handle, obj_handle);
 	dst_vfs = container_of(dst_hdl, struct vfs_fsal_obj_handle, obj_handle);
 	if ((size_t)src_vfs < (size_t)dst_vfs) {
@@ -237,12 +239,17 @@ fsal_status_t vfs_copy(struct fsal_obj_handle *src_hdl, uint64_t src_offset,
 		PTHREAD_RWLOCK_rdlock(&src_hdl->lock);
 	}
 
-	*copied = splice_fcopy(dst_vfs->u.file.fd, src_offset,
-			       src_vfs->u.file.fd, dst_offset, count);
-	if (*copied < 0) {
-		st = fsalstat(*copied, 0);
+	ret = splice_fcopy(src_vfs->u.file.fd, src_offset, dst_vfs->u.file.fd,
+			   dst_offset, count);
+	if (ret < 0) {
+		LogMajor(COMPONENT_FSAL, "Failed to copy file: (%s)",
+			 strerror(-ret));
+		st = fsalstat(-ret, 0);
 		*copied = 0;
 	}
+	*copied = ret;
+	LogDebug(COMPONENT_FSAL, "vfs_copy: %zu of %zu bytes copied", *copied,
+		 count);
 
 	if ((size_t)src_vfs < (size_t)dst_vfs) {
 		PTHREAD_RWLOCK_unlock(&dst_hdl->lock);
