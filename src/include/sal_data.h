@@ -121,7 +121,7 @@ extern hash_table_t *ht_session_id;
  * This is also the maximum number of backchannel slots we'll use,
  * even if the client offers more.
  */
-#define NFS41_NB_SLOTS 3
+#define NFS41_NB_SLOTS 128
 
 /**
  * @brief Members in the slot table
