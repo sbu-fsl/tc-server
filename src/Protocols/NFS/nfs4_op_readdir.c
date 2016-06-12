@@ -521,7 +521,7 @@ int nfs4_op_readdir(struct nfs_argop4 *op, compound_data_t *data,
 	 * The Linux 3.0, 3.1.0 clients vs. TCP Ganesha comes out 10x slower
 	 * with 500 max entries
 	 */
-	estimated_num_entries = 50;
+	estimated_num_entries = MIN(1024, (maxcount >> 8));
 	tracker.total_entries = estimated_num_entries;
 
 	LogFullDebug(COMPONENT_NFS_READDIR,
