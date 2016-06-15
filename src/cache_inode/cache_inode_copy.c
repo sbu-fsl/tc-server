@@ -92,6 +92,12 @@ cache_inode_status_t cache_inode_copy(cache_entry_t *src_entry,
 		goto out;
 	}
 
+	if (count == 0) {
+		count = src_entry->obj_handle->attrs->filesize - src_offset;
+		LogDebug(COMPONENT_CACHE_INODE,
+			 "0-count has an effective value of %zu", count);
+	}
+
 	fsal_status = src_entry->obj_handle->obj_ops.copy(src_entry->obj_handle,
 							  src_offset,
 							  dst_entry->obj_handle,
