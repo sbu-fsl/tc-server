@@ -820,7 +820,12 @@ cache_inode_release_dirents(cache_entry_t *entry,
 			atomic_clear_uint32_t_bits(&entry->flags,
 						   CACHE_INODE_DIR_POPULATED);
 		}
-	}
+
+                if (entry->type == DIRECTORY &&
+                    entry->object.dir.parent.kv.len) {
+                        cache_inode_key_delete(&entry->object.dir.parent);
+                }
+        }
 }
 
 /**
