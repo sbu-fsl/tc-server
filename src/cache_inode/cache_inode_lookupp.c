@@ -50,6 +50,49 @@
 #include <assert.h>
 #include "export_mgr.h"
 
+#ifdef TCDEBUG
+#include "xxhash.h"
+
+#define MYVFS_HANDLE_LEN 59
+
+typedef struct myvfs_file_handle {
+	uint8_t handle_len; /* does not go on the wire */
+	uint8_t handle_data[MYVFS_HANDLE_LEN];
+} myvfs_file_handle_t;
+
+struct myvfs_fsal_obj_handle {
+	struct fsal_obj_handle obj_handle;
+	struct attrlist attributes; /*< Attributes of this Object. */
+	fsal_dev_t dev;
+	myvfs_file_handle_t *handle;
+	void *sub_ops;	/*< Optional subfsal ops */
+	const struct fsal_up_vector *up_ops;	/*< Upcall operations */
+	union {
+		struct {
+			int fd;
+			fsal_openflags_t openflags;
+		} file;
+		struct {
+			unsigned char *link_content;
+			int link_size;
+		} symlink;
+		struct {
+			myvfs_file_handle_t *dir;
+			char *name;
+		} unopenable;
+	} u;
+};
+
+static uint64_t XXH(cache_entry_t *entry) {
+        struct myvfs_fsal_obj_handle *vfs_hdl;
+
+        vfs_hdl = container_of(entry->obj_handle, struct myvfs_fsal_obj_handle,
+                               obj_handle);
+        return XXH64(vfs_hdl->handle->handle_data, vfs_hdl->handle->handle_len,
+                     8887);
+}
+#endif  // TCDEBUG
+
 /**
  *
  * @brief Implements parent lookup functionality
@@ -118,6 +161,7 @@ cache_inode_lookupp_impl(cache_entry_t *entry,
 		PTHREAD_RWLOCK_unlock(&entry->content_lock);
 		PTHREAD_RWLOCK_wrlock(&entry->content_lock);
 
+                LogMidDebug(COMPONENT_CACHE_INODE, "parent not found in cache");
 		fsal_status =
 		    entry->obj_handle->obj_ops.lookup(entry->obj_handle,
 						   "..", &parent_handle);
@@ -146,6 +190,15 @@ cache_inode_lookupp_impl(cache_entry_t *entry,
 				    &((*parent)->fh_hk.key));
 	}
 
+#ifdef TCDEBUG
+        if (*parent) {
+                LogEvent(COMPONENT_CACHE_INODE, "%" PRIu64 "/.. = %" PRIu64,
+                         XXH(entry), XXH(*parent));
+        } else {
+                LogEvent(COMPONENT_CACHE_INODE, "%" PRIu64 "/.. = NULL",
+                         XXH(entry));
+        }
+#endif // TCDEBUG
 	return status;
 }
 

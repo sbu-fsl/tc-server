@@ -45,6 +45,15 @@
 #include <os/subr.h>
 #include "subfsal.h"
 
+#ifdef TCDEBUG
+#include "xxhash.h"
+
+static uint64_t XXH(vfs_file_handle_t *fh)
+{
+	return XXH64(fh->handle_data, fh->handle_len, 8887);
+}
+#endif
+
 /* helpers
  */
 
@@ -201,8 +210,11 @@ static fsal_status_t lookup(struct fsal_obj_handle *parent,
 	fs = parent->fs;
 	dirfd = vfs_fsal_open(parent_hdl, O_PATH | O_NOACCESS, &fsal_error);
 
-	if (dirfd < 0)
-		return fsalstat(fsal_error, -dirfd);
+	if (dirfd < 0) {
+                LogWarn(COMPONENT_FSAL, "invalid directory handle: %s",
+                        strerror(-dirfd));
+                return fsalstat(fsal_error, -dirfd);
+	}
 
 	retval = fstatat(dirfd, path, &stat, AT_SYMLINK_NOFOLLOW);
 
@@ -267,8 +279,8 @@ static fsal_status_t lookup(struct fsal_obj_handle *parent,
 			retval = vfs_encode_dummy_handle(fh, fs);
 
 			if (retval < 0) {
-				retval = errno;
-				goto direrr;
+                                retval = errno;
+                                goto direrr;
 			}
 
 			retval = 0;
@@ -286,10 +298,24 @@ static fsal_status_t lookup(struct fsal_obj_handle *parent,
 		retval = ENOMEM;
 		goto hdlerr;
 	}
+
+#ifdef TCDEBUG
+        LogEvent(COMPONENT_FSAL, "%" PRIu64 "/%s == %" PRIu64,
+                 XXH(parent_hdl->handle), path, XXH(fh));
+#endif
+
 	*handle = &hdl->obj_handle;
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 
  direrr:
+#ifdef TCDEBUG
+	if (retval != 0) {
+                LogEvent(COMPONENT_FSAL, "lookup failure: %d %s", retval,
+                         strerror(retval));
+                LogEvent(COMPONENT_FSAL, "%" PRIu64 "/%s failed: %s",
+                         XXH(parent_hdl->handle), path, strerror(retval));
+        }
+#endif
 	close(dirfd);
  hdlerr:
 	fsal_error = posix2fsal_error(retval);
