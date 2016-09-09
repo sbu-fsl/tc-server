@@ -185,7 +185,7 @@ fsal_status_t vfs_write(struct fsal_obj_handle *obj_hdl,
 	assert(myself->u.file.fd >= 0
 	       && myself->u.file.openflags != FSAL_O_CLOSED);
 
-	if (offset == SIZE_MAX - 1) {
+	if (offset == SIZE_MAX) {
 		offset = myself->attributes.filesize;
 		LogDebug(COMPONENT_FSAL, "Appending file from %zu", offset);
 	}
