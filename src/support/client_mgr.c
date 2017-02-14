@@ -41,6 +41,10 @@
 
 #include <time.h>
 #include <unistd.h>
+#include <sys/socket.h>
+#ifdef RPC_VSOCK
+#include <linux/vm_sockets.h>
+#endif /* VSOCK */
 #include <sys/types.h>
 #include <sys/param.h>
 #include <pthread.h>
@@ -156,6 +160,18 @@ struct gsh_client *get_gsh_client(sockaddr_t *client_ipaddr, bool lookup_only)
 		       (uint8_t *) &((struct sockaddr_in6 *)client_ipaddr)->
 		       sin6_addr, sizeof(ipaddr));
 		break;
+#ifdef RPC_VSOCK
+	case AF_VSOCK:
+	{
+		struct sockaddr_vm *svm; /* XXX checkpatch bs */
+
+		svm = (struct sockaddr_vm *)client_ipaddr;
+		addr = (uint8_t *)&(svm->svm_cid);
+		addr_len = sizeof(svm->svm_cid);
+		ipaddr = svm->svm_cid;
+	}
+	break;
+#endif /* VSOCK */
 	default:
 		assert(0);
 	}
@@ -194,9 +210,6 @@ struct gsh_client *get_gsh_client(sockaddr_t *client_ipaddr, bool lookup_only)
 	PTHREAD_RWLOCK_unlock(&client_by_ip.lock);
 
 	server_st = gsh_calloc(1, (sizeof(struct server_stats) + addr_len));
-
-	if (server_st == NULL)
-		return NULL;
 
 	cl = &server_st->client;
 	memcpy(cl->addrbuf, addr, addr_len);
@@ -277,6 +290,18 @@ int remove_gsh_client(sockaddr_t *client_ipaddr)
 		       (uint8_t *) &((struct sockaddr_in6 *)client_ipaddr)->
 		       sin6_addr, sizeof(ipaddr));
 		break;
+#ifdef RPC_VSOCK
+	case AF_VSOCK:
+	{
+		struct sockaddr_vm *svm; /* XXX checkpatch horror */
+
+		svm = (struct sockaddr_vm *)client_ipaddr;
+		addr = (uint8_t *)&(svm->svm_cid);
+		addr_len = sizeof(svm->svm_cid);
+		ipaddr = svm->svm_cid;
+	}
+	break;
+#endif /* VSOCK */
 	default:
 		assert(0);
 	}
@@ -353,6 +378,10 @@ static bool arg_ipaddr(DBusMessageIter *args, sockaddr_t *sp, char **errormsg)
 	char *client_addr;
 	unsigned char addrbuf[16];
 	bool success = true;
+
+	/* XXX AF_VSOCK addresses are not self-describing--and one might
+	 * question whether inet addresses really are, either...so?
+	 */
 
 	if (args == NULL) {
 		success = false;

@@ -38,6 +38,7 @@
 #include "fcntl.h"
 #include "include/gpfs_nfs.h"
 #include "fsal_up.h"
+#include "gsh_config.h"
 
 struct gpfs_filesystem;
 
@@ -62,6 +63,13 @@ struct gpfs_ds {
 	bool connected;		/*< True if the handle has been connected */
 };
 
+struct gpfs_fd {
+	/** The open and share mode etc. */
+	fsal_openflags_t openflags;
+	/** The gpfsfs file descriptor. */
+	int fd;
+};
+
 
 /* defined the set of attributes supported with POSIX */
 #define GPFS_SUPPORTED_ATTRIBUTES (                              \
@@ -71,10 +79,15 @@ struct gpfs_ds {
 		ATTR_GROUP    | ATTR_ATIME    | ATTR_RAWDEV    | \
 		ATTR_CTIME    | ATTR_MTIME    | ATTR_SPACEUSED | \
 		ATTR_CHGTIME | ATTR_ACL | ATTR4_SPACE_RESERVED | \
-		ATTR4_FS_LOCATIONS)
+		ATTR4_FS_LOCATIONS | ATTR4_XATTR)
+
+#define GPFS_MAX_FH_SIZE OPENHANDLE_HANDLE_LEN
 
 /* Define the buffer size for GPFS NFS4 ACL. */
 #define GPFS_ACL_BUF_SIZE 0x1000
+
+/* Define the standard fsid_type for GPFS*/
+#define GPFS_FSID_TYPE FSID_MAJOR_64
 
 /* A set of buffers to retrieve multiple attributes at the same time. */
 typedef struct fsal_xstat__ {
@@ -86,7 +99,7 @@ typedef struct fsal_xstat__ {
 
 static inline size_t gpfs_sizeof_handle(const struct gpfs_file_handle *hdl)
 {
-	return offsetof(struct gpfs_file_handle, f_handle)+hdl->handle_size;
+	return hdl->handle_size;
 }
 
 void export_ops_init(struct export_ops *ops);
@@ -99,12 +112,10 @@ fsal_status_t fsal_internal_close(int fd, void *owner, int cflags);
 
 int fsal_internal_version(void);
 
-fsal_status_t fsal_internal_get_handle(const char *p_fsalpath,
-				struct gpfs_file_handle *p_handle);
-
 fsal_status_t fsal_internal_get_handle_at(int dfd,
 				const char *p_fsalname,
-				struct gpfs_file_handle *p_handle);
+				struct gpfs_file_handle *p_handle,
+				int expfd, int *expfdP);
 
 fsal_status_t gpfsfsal_xstat_2_fsal_attributes(
 					gpfsfsal_xstat_t *p_buffxstat,
@@ -139,7 +150,7 @@ fsal_status_t fsal_readlink_by_handle(int dirfd,
  * Get the handle for a path (posix or fid path)
  */
 fsal_status_t fsal_internal_fd2handle(int fd,
-				struct gpfs_file_handle *p_handle);
+				struct gpfs_file_handle *p_handle, int *expfdP);
 
 fsal_status_t fsal_internal_link_at(int srcfd, int dfd, char *name);
 
@@ -158,6 +169,12 @@ fsal_status_t fsal_internal_unlink(int dirfd,
 				   const char *p_stat_name, struct stat *buf);
 
 fsal_status_t fsal_internal_create(struct fsal_obj_handle *dir_hdl,
+				   const char *p_stat_name, mode_t mode,
+				   int posix_flags,
+				   struct gpfs_file_handle *p_new_handle,
+				   struct stat *buf);
+
+fsal_status_t fsal_internal_mknode(struct fsal_obj_handle *dir_hdl,
 				   const char *p_stat_name, mode_t mode,
 				   dev_t dev,
 				   struct gpfs_file_handle *p_new_handle,
@@ -198,7 +215,6 @@ fsal_status_t GPFSFSAL_fs_loc(struct fsal_export *export,
 				struct gpfs_filesystem *gpfs_fs,
 				const struct req_op_context *p_context,
 				struct gpfs_file_handle *p_filehandle,
-				struct attrlist *p_object_attributes,
 				struct fs_locations4 *fs_loc);
 
 fsal_status_t GPFSFSAL_statfs(int fd,
@@ -216,6 +232,14 @@ fsal_status_t GPFSFSAL_create(struct fsal_obj_handle *dir_hdl,
 			      struct gpfs_file_handle *p_object_handle,
 			      struct attrlist *p_object_attributes);
 
+fsal_status_t GPFSFSAL_create2(struct fsal_obj_handle *dir_hdl,
+			      const char *p_filename,
+			      const struct req_op_context *p_context,
+			      mode_t unix_mode,
+			      struct gpfs_file_handle *p_object_handle,
+			      int posix_flags,
+			      struct attrlist *p_object_attributes);
+
 fsal_status_t GPFSFSAL_mkdir(struct fsal_obj_handle *dir_hdl,
 			     const char *p_dirname,
 			     const struct req_op_context *p_context,
@@ -226,8 +250,7 @@ fsal_status_t GPFSFSAL_mkdir(struct fsal_obj_handle *dir_hdl,
 fsal_status_t GPFSFSAL_link(struct fsal_obj_handle *dir_hdl,
 			    struct gpfs_file_handle *p_target_handle,
 			    const char *p_link_name,
-			    const struct req_op_context *p_context,
-			    struct attrlist *p_attributes);
+			    const struct req_op_context *p_context);
 
 fsal_status_t GPFSFSAL_mknode(struct fsal_obj_handle *dir_hdl,
 			      const char *p_node_name,
@@ -240,9 +263,8 @@ fsal_status_t GPFSFSAL_mknode(struct fsal_obj_handle *dir_hdl,
 
 fsal_status_t GPFSFSAL_open(struct fsal_obj_handle *obj_hdl,
 			    const struct req_op_context *p_context,
-			    fsal_openflags_t openflags,
+			    int posix_flags,
 			    int *p_file_descriptor,
-			    struct attrlist *p_file_attributes,
 			    bool reopen);
 
 fsal_status_t GPFSFSAL_read(int fd,
@@ -250,7 +272,8 @@ fsal_status_t GPFSFSAL_read(int fd,
 			    size_t buffer_size,
 			    caddr_t buffer,
 			    size_t *p_read_amount,
-			    bool *p_end_of_file);
+			    bool *p_end_of_file,
+			    int expfs);
 
 fsal_status_t GPFSFSAL_write(int fd,
 			     uint64_t offset,
@@ -258,7 +281,8 @@ fsal_status_t GPFSFSAL_write(int fd,
 			     caddr_t buffer,
 			     size_t *p_write_amount,
 			     bool *fsal_stable,
-			     const struct req_op_context *p_context);
+			     const struct req_op_context *p_context,
+			     int expfs);
 
 fsal_status_t GPFSFSAL_alloc(int fd,
 			     uint64_t offset,
@@ -279,6 +303,14 @@ fsal_status_t GPFSFSAL_lock_op(struct fsal_export *export,
 			       fsal_lock_param_t request_lock,
 			       fsal_lock_param_t *conflicting_lock);
 
+fsal_status_t GPFSFSAL_lock_op2(int my_fd,
+				struct fsal_export *export,
+				struct fsal_obj_handle *obj_hdl,
+				void *p_owner,
+				fsal_lock_op_t lock_op,
+				fsal_lock_param_t *request_lock,
+				fsal_lock_param_t *conflicting_lock);
+
 fsal_status_t GPFSFSAL_share_op(int mntfd,
 				int fd,
 				void *p_owner,
@@ -293,8 +325,7 @@ fsal_status_t GPFSFSAL_rename(struct fsal_obj_handle *old_hdl,
 fsal_status_t GPFSFSAL_readlink(struct fsal_obj_handle *dir_hdl,
 				const struct req_op_context *p_context,
 				char *p_link_content,
-				size_t *link_len,
-				struct attrlist *p_link_attributes);
+				size_t *link_len);
 
 fsal_status_t GPFSFSAL_symlink(struct fsal_obj_handle *dir_hdl,
 			       const char *p_linkname,

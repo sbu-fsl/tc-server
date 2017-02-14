@@ -41,6 +41,9 @@
 #include "config.h"
 
 #include <misc/queue.h> /* avoid conflicts with sys/queue.h */
+#ifdef LINUX
+#include <sys/sysmacros.h> /* for major(3), minor(3) */
+#endif
 #include <libgen.h>		/* used for 'dirname' */
 #include <pthread.h>
 #include <sys/stat.h>
@@ -66,11 +69,18 @@
 #include <blkid/blkid.h>
 #include <uuid/uuid.h>
 #endif
+#include "fsal.h"
 #include "fsal_api.h"
 #include "FSAL/fsal_commonlib.h"
 #include "FSAL/access_check.h"
 #include "fsal_private.h"
 #include "fsal_convert.h"
+#include "nfs4_acls.h"
+#include "sal_data.h"
+
+#ifdef USE_BLKID
+static struct blkid_struct_cache *cache;
+#endif
 
 bool init_complete;
 
@@ -115,10 +125,25 @@ void fsal_detach_export(struct fsal_module *fsal_hdl,
  *
  */
 
-int fsal_export_init(struct fsal_export *exp)
+void fsal_export_init(struct fsal_export *exp)
 {
 	memcpy(&exp->exp_ops, &def_export_ops, sizeof(struct export_ops));
-	return 0;
+}
+
+/**
+ * @brief Stack an export on top of another
+ *
+ * Set up export stacking for stackable FSALs
+ *
+ * @param[in] sub_export	Export being stacked on
+ * @param[in] super_export	Export stacking on top
+ * @return Return description
+ */
+void fsal_export_stack(struct fsal_export *sub_export,
+		       struct fsal_export *super_export)
+{
+	sub_export->super_export = super_export;
+	super_export->sub_export = sub_export;
 }
 
 /**
@@ -143,12 +168,9 @@ void fsal_obj_handle_init(struct fsal_obj_handle *obj, struct fsal_export *exp,
 {
 	pthread_rwlockattr_t attrs;
 
-	assert(obj->attrs != NULL);
-
 	memcpy(&obj->obj_ops, &def_handle_ops, sizeof(struct fsal_obj_ops));
 	obj->fsal = exp->fsal;
 	obj->type = type;
-	obj->attrs->expire_time_attr = 0;
 	pthread_rwlockattr_init(&attrs);
 #ifdef GLIBC
 	pthread_rwlockattr_setkind_np(
@@ -342,6 +364,10 @@ const char *msg_fsal_err(fsal_errors_t fsal_err)
 		return "No matching ACE";
 	case ERR_FSAL_BAD_RANGE:
 		return "Lock not in allowable range";
+	case ERR_FSAL_CROSS_JUNCTION:
+		return "Crossed Junction";
+	case ERR_FSAL_BADNAME:
+		return "Invalid Name";
 	}
 
 	return "Unknown FSAL error";
@@ -407,6 +433,84 @@ void display_fsinfo(struct fsal_staticfsinfo_t *info)
 	LogDebug(COMPONENT_FSAL, "  fsal_grace = %d  ",
 		 info->fsal_grace);
 	LogDebug(COMPONENT_FSAL, "}");
+}
+
+int display_attrlist(struct display_buffer *dspbuf,
+		     struct attrlist *attr, bool is_obj)
+{
+	int b_left = display_start(dspbuf);
+
+	if (b_left > 0 && attr->request_mask != 0)
+		b_left = display_printf(dspbuf, "Mask = %08x",
+					(unsigned int) attr->request_mask);
+
+	if (b_left > 0 && attr->valid_mask != 0)
+		b_left = display_printf(dspbuf, "Mask = %08x",
+					(unsigned int) attr->valid_mask);
+
+	if (b_left > 0 && is_obj)
+		b_left = display_printf(dspbuf, " %s",
+					object_file_type_to_str(attr->type));
+
+	if (b_left > 0 && FSAL_TEST_MASK(attr->valid_mask, ATTR_NUMLINKS))
+		b_left = display_printf(dspbuf, " numlinks=0x%"PRIu32,
+					attr->numlinks);
+
+	if (b_left > 0 && FSAL_TEST_MASK(attr->valid_mask, ATTR_SIZE))
+		b_left = display_printf(dspbuf, " size=0x%"PRIu64,
+					attr->filesize);
+
+	if (b_left > 0 && FSAL_TEST_MASK(attr->valid_mask, ATTR_MODE))
+		b_left = display_printf(dspbuf, " mode=0%"PRIo32,
+					attr->mode);
+
+	if (b_left > 0 && FSAL_TEST_MASK(attr->valid_mask, ATTR_OWNER))
+		b_left = display_printf(dspbuf, " owner=0x%"PRIu64,
+					attr->owner);
+
+	if (b_left > 0 && FSAL_TEST_MASK(attr->valid_mask, ATTR_GROUP))
+		b_left = display_printf(dspbuf, " group=0x%"PRIu64,
+					attr->group);
+
+	if (b_left > 0 && FSAL_TEST_MASK(attr->valid_mask, ATTR_ATIME_SERVER))
+		b_left = display_cat(dspbuf, " atime=SERVER");
+
+	if (b_left > 0 && FSAL_TEST_MASK(attr->valid_mask, ATTR_MTIME_SERVER))
+		b_left = display_cat(dspbuf, " mtime=SERVER");
+
+	if (b_left > 0 && FSAL_TEST_MASK(attr->valid_mask, ATTR_ATIME)) {
+		b_left = display_cat(dspbuf, " atime=");
+		if (b_left > 0)
+			b_left = display_timespec(dspbuf, &attr->atime);
+	}
+
+	if (b_left > 0 && FSAL_TEST_MASK(attr->valid_mask, ATTR_MTIME)) {
+		b_left = display_cat(dspbuf, " mtime=");
+		if (b_left > 0)
+			b_left = display_timespec(dspbuf, &attr->mtime);
+	}
+
+	return b_left;
+}
+
+void log_attrlist(log_components_t component, log_levels_t level,
+		  const char *reason, struct attrlist *attr, bool is_obj,
+		  char *file, int line, char *function)
+{
+	char str[LOG_BUFF_LEN];
+	struct display_buffer dspbuf = {sizeof(str), str, str};
+
+	(void) display_attrlist(&dspbuf, attr, is_obj);
+
+	if (!isLevel(component, level))
+		return;
+
+
+	DisplayLogComponentLevel(component, file, line, function, level,
+		"%s %s attributes %s",
+		reason,
+		is_obj ? "obj" : "set",
+		str);
 }
 
 int open_dir_by_path_walk(int first_fd, const char *path, struct stat *stat)
@@ -646,22 +750,15 @@ void remove_fs(struct fsal_filesystem *fs)
 
 void free_fs(struct fsal_filesystem *fs)
 {
-	if (fs->path != NULL)
-		gsh_free(fs->path);
-
-	if (fs->device != NULL)
-		gsh_free(fs->device);
-
-	if (fs->type != NULL)
-		gsh_free(fs->type);
-
+	gsh_free(fs->path);
+	gsh_free(fs->device);
+	gsh_free(fs->type);
 	gsh_free(fs);
 }
 
 int re_index_fs_fsid(struct fsal_filesystem *fs,
 		     enum fsid_type fsid_type,
-		     uint64_t major,
-		     uint64_t minor)
+		     struct fsal_fsid__ *fsid)
 {
 	struct avltree_node *node;
 	struct fsal_fsid__ old_fsid = fs->fsid;
@@ -672,7 +769,7 @@ int re_index_fs_fsid(struct fsal_filesystem *fs,
 		 " to 0x%016"PRIx64".0x%016"PRIx64,
 		 fs->path,
 		 fs->fsid.major, fs->fsid.minor,
-		 major, minor);
+		 fsid->major, fsid->minor);
 
 	/* It is not valid to use this routine to
 	 * remove fs from index.
@@ -683,8 +780,8 @@ int re_index_fs_fsid(struct fsal_filesystem *fs,
 	if (fs->in_fsid_avl)
 		avltree_remove(&fs->avl_fsid, &avl_fsid);
 
-	fs->fsid.major = major;
-	fs->fsid.minor = minor;
+	fs->fsid.major = fsid->major;
+	fs->fsid.minor = fsid->minor;
 	fs->fsid_type = fsid_type;
 
 	node = avltree_insert(&fs->avl_fsid, &avl_fsid);
@@ -754,7 +851,7 @@ int re_index_fs_dev(struct fsal_filesystem *fs,
 int change_fsid_type(struct fsal_filesystem *fs,
 		     enum fsid_type fsid_type)
 {
-	uint64_t major = 0, minor = 0;
+	struct fsal_fsid__ fsid = {0};
 	bool valid = false;
 
 	if (fs->fsid_type == fsid_type)
@@ -764,24 +861,24 @@ int change_fsid_type(struct fsal_filesystem *fs,
 	case FSID_ONE_UINT64:
 		if (fs->fsid_type == FSID_TWO_UINT64) {
 			/* Use the same compression we use for NFS v3 fsid */
-			major = squash_fsid(&fs->fsid);
+			fsid.major = squash_fsid(&fs->fsid);
 			valid = true;
 		} else if (fs->fsid_type == FSID_TWO_UINT32) {
 			/* Put major in the high order 32 bits and minor
 			 * in the low order 32 bits.
 			 */
-			major = fs->fsid.major << 32 |
-				fs->fsid.minor;
+			fsid.major = fs->fsid.major << 32 |
+				     fs->fsid.minor;
 			valid = true;
 		}
-		minor = 0;
+		fsid.minor = 0;
 		break;
 
 	case FSID_MAJOR_64:
 		/* Nothing to do, will ignore fsid.minor in index */
 		valid = true;
-		major = fs->fsid.major;
-		minor = fs->fsid.minor;
+		fsid.major = fs->fsid.major;
+		fsid.minor = fs->fsid.minor;
 		break;
 
 	case FSID_TWO_UINT64:
@@ -789,8 +886,8 @@ int change_fsid_type(struct fsal_filesystem *fs,
 			/* Must re-index since minor was not indexed
 			 * previously.
 			 */
-			major = fs->fsid.major;
-			minor = fs->fsid.minor;
+			fsid.major = fs->fsid.major;
+			fsid.minor = fs->fsid.minor;
 			valid = true;
 		} else {
 			/* Nothing to do, FSID_TWO_UINT32 will just have high
@@ -803,8 +900,8 @@ int change_fsid_type(struct fsal_filesystem *fs,
 		break;
 
 	case FSID_DEVICE:
-		major = fs->dev.major;
-		minor = fs->dev.minor;
+		fsid.major = fs->dev.major;
+		fsid.minor = fs->dev.minor;
 		valid = true;
 
 	case FSID_TWO_UINT32:
@@ -812,17 +909,17 @@ int change_fsid_type(struct fsal_filesystem *fs,
 			/* Shrink each 64 bit quantity to 32 bits by xoring the
 			 * two halves.
 			 */
-			major = (fs->fsid.major & MASK_32) ^
-				(fs->fsid.major >> 32);
-			minor = (fs->fsid.minor & MASK_32) ^
-				(fs->fsid.minor >> 32);
+			fsid.major = (fs->fsid.major & MASK_32) ^
+				     (fs->fsid.major >> 32);
+			fsid.minor = (fs->fsid.minor & MASK_32) ^
+				     (fs->fsid.minor >> 32);
 			valid = true;
 		} else if (fs->fsid_type == FSID_ONE_UINT64) {
 			/* Split 64 bit that is in major into two 32 bit using
 			 * the high order 32 bits as major.
 			 */
-			major = fs->fsid.major >> 32;
-			minor = fs->fsid.major & MASK_32;
+			fsid.major = fs->fsid.major >> 32;
+			fsid.minor = fs->fsid.major & MASK_32;
 			valid = true;
 		}
 
@@ -836,7 +933,7 @@ int change_fsid_type(struct fsal_filesystem *fs,
 	if (!valid)
 		return -EINVAL;
 
-	return re_index_fs_fsid(fs, fsid_type, major, minor);
+	return re_index_fs_fsid(fs, fsid_type, &fsid);
 }
 
 static bool posix_get_fsid(struct fsal_filesystem *fs)
@@ -845,7 +942,6 @@ static bool posix_get_fsid(struct fsal_filesystem *fs)
 	struct stat mnt_stat;
 #ifdef USE_BLKID
 	char *dev_name = NULL, *uuid_str;
-	static struct blkid_struct_cache *cache;
 	struct blkid_struct_dev *dev;
 #endif
 
@@ -917,9 +1013,11 @@ static bool posix_get_fsid(struct fsal_filesystem *fs)
 		LogInfo(COMPONENT_FSAL,
 			"uuid_parse of %s failed for uuid %s",
 			fs->path, uuid_str);
+		free(uuid_str);
 		goto no_uuid;
 	}
 
+	free(uuid_str);
 	fs->fsid_type = FSID_TWO_UINT64;
 	free(dev_name);
 
@@ -965,21 +1063,9 @@ static void posix_create_file_system(struct mntent *mnt)
 
 	fs = gsh_calloc(1, sizeof(*fs));
 
-	if (fs == NULL) {
-		LogFatal(COMPONENT_FSAL,
-			 "mem alloc for %s failed",
-			 mnt->mnt_dir);
-	}
-
 	fs->path = gsh_strdup(mnt->mnt_dir);
 	fs->device = gsh_strdup(mnt->mnt_fsname);
 	fs->type = gsh_strdup(mnt->mnt_type);
-
-	if (fs->path == NULL) {
-		LogFatal(COMPONENT_FSAL,
-			 "mem alloc for %s failed",
-			 mnt->mnt_dir);
-	}
 
 	if (!posix_get_fsid(fs)) {
 		free_fs(fs);
@@ -1183,6 +1269,9 @@ int populate_posix_file_systems(bool force)
 
 		posix_create_file_system(mnt);
 	}
+#ifdef USE_BLKID
+	blkid_put_cache(cache);
+#endif
 
 	endmntent(fp);
 
@@ -1255,26 +1344,39 @@ int resolve_posix_filesystem(const char *path,
 	return retval;
 }
 
+static void release_posix_file_system(struct fsal_filesystem *fs)
+{
+	struct fsal_filesystem *child_fs;
+
+	if (fs->unclaim != NULL) {
+		LogWarn(COMPONENT_FSAL,
+			"Filesystem %s is still claimed",
+			fs->path);
+		unclaim_fs(fs);
+	}
+
+	while ((child_fs = glist_first_entry(&fs->children,
+					     struct fsal_filesystem,
+					     siblings))) {
+		release_posix_file_system(child_fs);
+	}
+
+	LogDebug(COMPONENT_FSAL,
+		 "Releasing filesystem %s (%p)",
+		 fs->path, fs);
+	remove_fs(fs);
+	free_fs(fs);
+}
+
 void release_posix_file_systems(void)
 {
-	struct glist_head *glist, *glistn;
 	struct fsal_filesystem *fs;
 
 	PTHREAD_RWLOCK_wrlock(&fs_lock);
 
-	glist_for_each_safe(glist, glistn, &posix_file_systems) {
-		fs = glist_entry(glist, struct fsal_filesystem, filesystems);
-		if (fs->unclaim != NULL) {
-			LogWarn(COMPONENT_FSAL,
-				"Fileystem %s is still claimed",
-				fs->path);
-			unclaim_fs(fs);
-		}
-		LogDebug(COMPONENT_FSAL,
-			 "Releasing filesystem %s",
-			 fs->path);
-		remove_fs(fs);
-		free_fs(fs);
+	while ((fs = glist_first_entry(&posix_file_systems,
+				       struct fsal_filesystem, filesystems))) {
+		release_posix_file_system(fs);
 	}
 
 	PTHREAD_RWLOCK_unlock(&fs_lock);
@@ -1474,9 +1576,6 @@ int claim_posix_filesystems(const char *path,
 
 	/* Check if we found a filesystem */
 	if (root == NULL) {
-		LogCrit(COMPONENT_FSAL,
-			"No file system for export path %s",
-			path);
 		retval = ENOENT;
 		goto out;
 	}
@@ -1639,17 +1738,26 @@ fsal_errors_t fsal_inherit_acls(struct attrlist *attrs, fsal_acl_t *sacl,
 	if (naces == 0)
 		return ERR_FSAL_NO_ERROR;
 
-	attrs->acl = nfs4_acl_alloc();
-	if (!attrs->acl)
-		return ERR_FSAL_NOMEM;
-	attrs->acl->aces = (fsal_ace_t *) nfs4_ace_alloc(naces);
-	if (!attrs->acl->aces) {
-		nfs4_acl_free(attrs->acl);
-		attrs->acl = NULL;
-		return ERR_FSAL_NOMEM;
+	if (attrs->acl != NULL) {
+		/* We should never be passed attributes that have an
+		 * ACL attached, but just in case some future code
+		 * path changes that assumption, let's not release the
+		 * old ACL properly.
+		 */
+		int acl_status;
+
+		acl_status = nfs4_acl_release_entry(attrs->acl);
+
+		if (acl_status != NFS_V4_ACL_SUCCESS)
+			LogCrit(COMPONENT_FSAL,
+				"Failed to release old acl, status=%d",
+				acl_status);
 	}
 
+	attrs->acl = nfs4_acl_alloc();
+	attrs->acl->aces = (fsal_ace_t *) nfs4_ace_alloc(naces);
 	dace = attrs->acl->aces;
+
 	for (sace = sacl->aces; sace < sacl->aces + sacl->naces; sace++) {
 		if (IS_FSAL_ACE_FLAG(*sace, inherit)) {
 			*dace = *sace;
@@ -1670,7 +1778,7 @@ fsal_errors_t fsal_inherit_acls(struct attrlist *attrs, fsal_acl_t *sacl,
 		}
 	}
 	attrs->acl->naces = naces;
-	FSAL_SET_MASK(attrs->mask, ATTR_ACL);
+	FSAL_SET_MASK(attrs->valid_mask, ATTR_ACL);
 
 	return ERR_FSAL_NO_ERROR;
 }
@@ -1688,7 +1796,7 @@ fsal_status_t fsal_remove_access(struct fsal_obj_handle *dir_hdl,
 				dir_hdl,
 				FSAL_MODE_MASK_SET(FSAL_X_OK) |
 				FSAL_ACE4_MASK_SET(FSAL_ACE_PERM_EXECUTE),
-				NULL, NULL);
+				NULL, NULL, false);
 	if (FSAL_IS_ERROR(fsal_status)) {
 		LogFullDebug(COMPONENT_FSAL,
 			 "Could not delete: No execute permession on parent: %s",
@@ -1703,13 +1811,13 @@ fsal_status_t fsal_remove_access(struct fsal_obj_handle *dir_hdl,
 				FSAL_MODE_MASK_SET(FSAL_W_OK) |
 				FSAL_ACE4_MASK_SET(FSAL_ACE_PERM_DELETE) |
 				FSAL_ACE4_REQ_FLAG,
-				NULL, NULL);
+				NULL, NULL, false);
 	fsal_status = dir_hdl->obj_ops.test_access(
 				dir_hdl,
 				FSAL_MODE_MASK_SET(FSAL_W_OK) |
 				FSAL_ACE4_MASK_SET(FSAL_ACE_PERM_DELETE_CHILD) |
 				FSAL_ACE4_REQ_FLAG,
-				NULL, NULL);
+				NULL, NULL, false);
 	if (FSAL_IS_ERROR(fsal_status) && FSAL_IS_ERROR(del_status)) {
 		/* Neither was explicitly allowed */
 		if (fsal_status.major != ERR_FSAL_NO_ACE) {
@@ -1735,7 +1843,7 @@ fsal_status_t fsal_remove_access(struct fsal_obj_handle *dir_hdl,
 				FSAL_ACE4_MASK_SET(isdir ?
 					   FSAL_ACE_PERM_ADD_SUBDIRECTORY
 					   : FSAL_ACE_PERM_ADD_FILE),
-				NULL, NULL);
+				NULL, NULL, false);
 
 		if (FSAL_IS_ERROR(fsal_status)) {
 			LogFullDebug(COMPONENT_FSAL,
@@ -1774,7 +1882,8 @@ fsal_status_t fsal_rename_access(struct fsal_obj_handle *src_dir_hdl,
 			FSAL_ACE4_MASK_SET(FSAL_ACE_PERM_ADD_SUBDIRECTORY);
 	else
 		access_type |= FSAL_ACE4_MASK_SET(FSAL_ACE_PERM_ADD_FILE);
-	status = fsal_test_access(dst_dir_hdl, access_type, NULL, NULL);
+	status = dst_dir_hdl->obj_ops.test_access(dst_dir_hdl, access_type,
+						  NULL, NULL, false);
 	if (FSAL_IS_ERROR(status))
 		return status;
 
@@ -1849,20 +1958,29 @@ fsal_mode_gen_set(fsal_ace_t *ace, uint32_t mode)
 static fsal_status_t
 fsal_mode_gen_acl(struct attrlist *attrs)
 {
+	if (attrs->acl != NULL) {
+		/* We should never be passed attributes that have an
+		 * ACL attached, but just in case some future code
+		 * path changes that assumption, let's not release the
+		 * old ACL properly.
+		 */
+		int acl_status;
+
+		acl_status = nfs4_acl_release_entry(attrs->acl);
+
+		if (acl_status != NFS_V4_ACL_SUCCESS)
+			LogCrit(COMPONENT_FSAL,
+				"Failed to release old acl, status=%d",
+				acl_status);
+	}
+
 	attrs->acl = nfs4_acl_alloc();
-	if (!attrs->acl)
-		return fsalstat(ERR_FSAL_NOMEM, 0);
 	attrs->acl->naces = 6;
 	attrs->acl->aces = (fsal_ace_t *) nfs4_ace_alloc(attrs->acl->naces);
-	if (!attrs->acl->aces) {
-		nfs4_acl_free(attrs->acl);
-		attrs->acl = NULL;
-		return fsalstat(ERR_FSAL_NOMEM, 0);
-	}
 
 	fsal_mode_gen_set(attrs->acl->aces, attrs->mode);
 
-	FSAL_SET_MASK(attrs->mask, ATTR_ACL);
+	FSAL_SET_MASK(attrs->valid_mask, ATTR_ACL);
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
@@ -1872,7 +1990,7 @@ fsal_status_t fsal_mode_to_acl(struct attrlist *attrs, fsal_acl_t *sacl)
 	int naces;
 	fsal_ace_t *sace, *dace;
 
-	if (!FSAL_TEST_MASK(attrs->mask, ATTR_MODE))
+	if (!FSAL_TEST_MASK(attrs->valid_mask, ATTR_MODE))
 		return fsalstat(ERR_FSAL_NO_ERROR, 0);
 
 	if (!sacl || sacl->naces == 0)
@@ -1905,18 +2023,27 @@ fsal_status_t fsal_mode_to_acl(struct attrlist *attrs, fsal_acl_t *sacl)
 	/* Space for generated ACEs at the end */
 	naces += 6;
 
-	attrs->acl = nfs4_acl_alloc();
-	if (!attrs->acl)
-		return fsalstat(ERR_FSAL_NOMEM, 0);
-	attrs->acl->aces = (fsal_ace_t *) nfs4_ace_alloc(naces);
-	if (!attrs->acl->aces) {
-		nfs4_acl_free(attrs->acl);
-		attrs->acl = NULL;
-		return fsalstat(ERR_FSAL_NOMEM, 0);
+	if (attrs->acl != NULL) {
+		/* We should never be passed attributes that have an
+		 * ACL attached, but just in case some future code
+		 * path changes that assumption, let's not release the
+		 * old ACL properly.
+		 */
+		int acl_status;
+
+		acl_status = nfs4_acl_release_entry(attrs->acl);
+
+		if (acl_status != NFS_V4_ACL_SUCCESS)
+			LogCrit(COMPONENT_FSAL,
+				"Failed to release old acl, status=%d",
+				acl_status);
 	}
 
+	attrs->acl = nfs4_acl_alloc();
+	attrs->acl->aces = (fsal_ace_t *) nfs4_ace_alloc(naces);
 	attrs->acl->naces = 0;
 	dace = attrs->acl->aces;
+
 	for (sace = sacl->aces; sace < sacl->aces + sacl->naces;
 	     sace++, dace++) {
 		if (IS_FSAL_ACE_MODE_GEN(*sace))
@@ -1961,7 +2088,7 @@ fsal_status_t fsal_mode_to_acl(struct attrlist *attrs, fsal_acl_t *sacl)
 	fsal_mode_gen_set(dace, attrs->mode);
 
 	attrs->acl->naces = naces;
-	FSAL_SET_MASK(attrs->mask, ATTR_ACL);
+	FSAL_SET_MASK(attrs->valid_mask, ATTR_ACL);
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
@@ -1996,7 +2123,7 @@ fsal_status_t fsal_acl_to_mode(struct attrlist *attrs)
 	fsal_ace_t *ace = NULL;
 	uint32_t *modes;
 
-	if (!FSAL_TEST_MASK(attrs->mask, ATTR_ACL))
+	if (!FSAL_TEST_MASK(attrs->valid_mask, ATTR_ACL))
 		return fsalstat(ERR_FSAL_NO_ERROR, 0);
 	if (!attrs->acl || attrs->acl->naces == 0)
 		return fsalstat(ERR_FSAL_NO_ERROR, 0);
@@ -2022,8 +2149,701 @@ fsal_status_t fsal_acl_to_mode(struct attrlist *attrs)
 
 	}
 
-	FSAL_SET_MASK(attrs->mask, ATTR_MODE);
+	FSAL_SET_MASK(attrs->valid_mask, ATTR_MODE);
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+}
+
+void set_common_verifier(struct attrlist *attrs, fsal_verifier_t verifier)
+{
+	uint32_t verf_hi = 0, verf_lo = 0;
+
+	memcpy(&verf_hi,
+	       verifier,
+	       sizeof(uint32_t));
+	memcpy(&verf_lo,
+	       verifier + sizeof(uint32_t),
+	       sizeof(uint32_t));
+
+	LogFullDebug(COMPONENT_FSAL,
+		     "Passed verifier %"PRIx32" %"PRIx32,
+		     verf_hi, verf_lo);
+
+	if (isDebug(COMPONENT_FSAL) &&
+	    (FSAL_TEST_MASK(attrs->valid_mask, ATTR_ATIME) ||
+	    (FSAL_TEST_MASK(attrs->valid_mask, ATTR_MTIME)))) {
+		LogWarn(COMPONENT_FSAL,
+			"atime or mtime was already set in attributes%"
+			PRIx32" %"PRIx32,
+			(uint32_t) attrs->atime.tv_sec,
+			(uint32_t) attrs->mtime.tv_sec);
+	}
+
+	attrs->atime.tv_sec = verf_hi;
+	attrs->mtime.tv_sec = verf_lo;
+
+	FSAL_SET_MASK(attrs->valid_mask, ATTR_ATIME | ATTR_MTIME);
+}
+
+/**
+ * @brief Update the ref counter of share state
+ *
+ * The caller is responsible for protecting the share.
+ *
+ * @param[in] share         Share to update
+ * @param[in] old_openflags Previous access/deny mode
+ * @param[in] new_openflags Current access/deny mode
+ */
+
+void update_share_counters(struct fsal_share *share,
+			   fsal_openflags_t old_openflags,
+			   fsal_openflags_t new_openflags)
+{
+	int access_read_inc =
+		((int)(new_openflags & FSAL_O_READ) != 0) -
+		((int)(old_openflags & FSAL_O_READ) != 0);
+
+	int access_write_inc =
+		((int)(new_openflags & FSAL_O_WRITE) != 0) -
+		((int)(old_openflags & FSAL_O_WRITE) != 0);
+
+	int deny_read_inc =
+		((int)(new_openflags & FSAL_O_DENY_READ) != 0) -
+		((int)(old_openflags & FSAL_O_DENY_READ) != 0);
+
+	/* Combine both FSAL_O_DENY_WRITE and FSAL_O_DENY_WRITE_MAND */
+	int deny_write_inc =
+		((int)(new_openflags & FSAL_O_DENY_WRITE) != 0) -
+		((int)(old_openflags & FSAL_O_DENY_WRITE) != 0) +
+		((int)(new_openflags & FSAL_O_DENY_WRITE_MAND) != 0) -
+		((int)(old_openflags & FSAL_O_DENY_WRITE_MAND) != 0);
+
+	int deny_write_mand_inc =
+		((int)(new_openflags & FSAL_O_DENY_WRITE_MAND) != 0) -
+		((int)(old_openflags & FSAL_O_DENY_WRITE_MAND) != 0);
+
+	share->share_access_read += access_read_inc;
+	share->share_access_write += access_write_inc;
+	share->share_deny_read += deny_read_inc;
+	share->share_deny_write += deny_write_inc;
+	share->share_deny_write_mand += deny_write_mand_inc;
+
+	LogFullDebug(COMPONENT_FSAL,
+		     "share counter: access_read %u, access_write %u, deny_read %u, deny_write %u, deny_write_v4 %u",
+		     share->share_access_read,
+		     share->share_access_write,
+		     share->share_deny_read,
+		     share->share_deny_write,
+		     share->share_deny_write_mand);
+}
+
+/**
+ * @brief Check for share conflict
+ *
+ * The caller is responsible for protecting the share.
+ *
+ * This function is NOT called if the caller holds a share reservation covering
+ * the requested access.
+ *
+ * @param[in] share        File to query
+ * @param[in] openflags    Desired access and deny mode
+ * @param[in] bypass       Bypasses share_deny_read and share_deny_write but
+ *                         not share_deny_write_mand
+ *
+ * @retval ERR_FSAL_SHARE_DENIED - a conflict occurred.
+ *
+ */
+
+fsal_status_t check_share_conflict(struct fsal_share *share,
+				   fsal_openflags_t openflags,
+				   bool bypass)
+{
+	char *cause = "";
+
+	if ((openflags & FSAL_O_READ) != 0
+	    && share->share_deny_read > 0
+	    && !bypass) {
+		cause = "access read denied by existing deny read";
+		goto out_conflict;
+	}
+
+	if ((openflags & FSAL_O_WRITE) != 0
+	    && (share->share_deny_write_mand > 0 ||
+		(!bypass && share->share_deny_write > 0))) {
+		cause = "access write denied by existing deny write";
+		goto out_conflict;
+	}
+
+	if ((openflags & FSAL_O_DENY_READ) != 0
+	    && share->share_access_read > 0) {
+		cause = "deny read denied by existing access read";
+		goto out_conflict;
+	}
+
+	if (((openflags & FSAL_O_DENY_WRITE) != 0 ||
+	     (openflags & FSAL_O_DENY_WRITE_MAND) != 0)
+	    && share->share_access_write > 0) {
+		cause = "deny write denied by existing access write";
+		goto out_conflict;
+	}
+
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+
+ out_conflict:
+
+	LogDebugAlt(COMPONENT_STATE, COMPONENT_FSAL,
+		    "Share conflict detected: %s openflags=%d bypass=%s",
+		    cause, (int) openflags,
+		    bypass ? "yes" : "no");
+
+	LogFullDebugAlt(COMPONENT_STATE, COMPONENT_FSAL,
+			"share->share_deny_read=%d share->share_deny_write=%d share->share_access_read=%d share->share_access_write=%d",
+			share->share_deny_read, share->share_deny_write,
+			share->share_access_read, share->share_access_write);
+
+	return fsalstat(ERR_FSAL_SHARE_DENIED, 0);
+}
+
+/**
+ * @brief Check two shares for conflict and merge.
+ *
+ * The caller is responsible for protecting the share.
+ *
+ * When two object handles are merged that both contain shares, we must
+ * check if the duplicate has a share conflict with the original. If
+ * so, we will return ERR_FSAL_SHARE_DENIED.
+ *
+ * @param[in] orig_share   Original share
+ * @param[in] dupe_share   Duplicate share
+ *
+ * @retval ERR_FSAL_SHARE_DENIED - a conflict occurred.
+ *
+ */
+
+fsal_status_t merge_share(struct fsal_share *orig_share,
+			  struct fsal_share *dupe_share)
+{
+	char *cause = "";
+
+	if (dupe_share->share_access_read > 0 &&
+	    orig_share->share_deny_read > 0) {
+		cause = "access read denied by existing deny read";
+		goto out_conflict;
+	}
+
+	if (dupe_share->share_deny_read > 0 &&
+	    orig_share->share_access_read > 0) {
+		cause = "deny read denied by existing access read";
+		goto out_conflict;
+	}
+
+	/* When checking deny write, we ONLY need to look at share_deny_write
+	 * since it counts BOTH FSAL_O_DENY_WRITE and FSAL_O_DENY_WRITE_MAND.
+	 */
+	if (dupe_share->share_access_write > 0 &&
+	    orig_share->share_deny_write > 0) {
+		cause = "access write denied by existing deny write";
+		goto out_conflict;
+	}
+
+	if (dupe_share->share_deny_write > 0 &&
+	    orig_share->share_access_write > 0) {
+		cause = "deny write denied by existing access write";
+		goto out_conflict;
+	}
+
+	/* Now that we are ok, merge the share counters in the original */
+	orig_share->share_access_read += dupe_share->share_access_read;
+	orig_share->share_access_write += dupe_share->share_access_write;
+	orig_share->share_deny_read += dupe_share->share_deny_read;
+	orig_share->share_deny_write += dupe_share->share_deny_write;
+	orig_share->share_deny_write_mand += dupe_share->share_deny_write_mand;
+
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+
+ out_conflict:
+
+	LogDebug(COMPONENT_STATE, "Share conflict detected: %s", cause);
+
+	return fsalstat(ERR_FSAL_SHARE_DENIED, 0);
+}
+
+/**
+ * @brief Reopen the fd associated with the object handle.
+ *
+ * This function assures that the fd is open in the mode requested. If
+ * the fd was already open, it closes it and reopens with the OR of the
+ * requested modes.
+ *
+ * This function will return with the object handle lock held for read
+ * if successful, except in the case where a temporary file descriptor is
+ * in use because of a conflict with another thread. By not holding the
+ * lock in that case, it may allow yet a third thread to open the global
+ * file descriptor in a usable mode reducing the use of temporary file
+ * descriptors.
+ *
+ * On calling, out_fd must point to a temporary fd. On return, out_fd
+ * will either still point to the temporary fd, which has now been opened
+ * and must be closed when done, or it will point to the object handle's
+ * global fd, which should be left open.
+ *
+ * Optionally, out_fd can be NULL in which case a file is not actually
+ * opened, in this case, all that actually happens is the share reservation
+ * check (which may result in the lock being held).
+ *
+ * @param[in]  obj_hdl     File on which to operate
+ * @param[in]  check_share Indicates we must check for share conflict
+ * @param[in]  openflags   Mode for open
+ * @param[in]  my_fd       The file descriptor associated with the object
+ * @param[in]  share       The fsal_share associated with the object
+ * @param[in]  open_func   Function to open a file descriptor
+ * @param[in]  close_func  Function to close a file descriptor
+ * @param[in,out] out_fd   File descriptor that is to be used
+ * @param[out] has_lock    Indicates that obj_hdl->lock is held read
+ * @param[out] closefd     Indicates that file descriptor must be closed
+ *
+ * @return FSAL status.
+ */
+
+fsal_status_t fsal_reopen_obj(struct fsal_obj_handle *obj_hdl,
+			      bool check_share,
+			      bool bypass,
+			      fsal_openflags_t openflags,
+			      struct fsal_fd *my_fd,
+			      struct fsal_share *share,
+			      fsal_open_func open_func,
+			      fsal_close_func close_func,
+			      struct fsal_fd **out_fd,
+			      bool *has_lock,
+			      bool *closefd)
+{
+	fsal_status_t status = {ERR_FSAL_NO_ERROR, 0};
+	bool retried = false;
+	fsal_openflags_t try_openflags;
+	int rc;
+
+	*closefd = false;
+
+	/* Take read lock on object to protect file descriptor.
+	 * We only take a read lock because we are not changing the
+	 * state of the file descriptor.
+	 */
+	PTHREAD_RWLOCK_rdlock(&obj_hdl->lock);
+
+	if (check_share) {
+		/* Note we will check again if we drop and re-acquire the lock
+		 * just to be on the safe side.
+		 */
+		status = check_share_conflict(share, openflags, bypass);
+
+		if (FSAL_IS_ERROR(status)) {
+			PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+			LogDebug(COMPONENT_FSAL,
+				 "check_share_conflict failed with %s",
+				 msg_fsal_err(status.major));
+			*has_lock = false;
+			return status;
+		}
+	}
+
+	if (out_fd == NULL) {
+		/* We are just checking share reservation if at all.
+		 * There is no need to proceed, we either passed the
+		 * share check, or didn't need it. In either case, there
+		 * is no need to open a file.
+		 */
+		*has_lock = true;
+		return fsalstat(ERR_FSAL_NO_ERROR, 0);
+	}
+
+again:
+
+	LogFullDebug(COMPONENT_FSAL,
+		     "Open mode = %x, desired mode = %x",
+		     (int) my_fd->openflags,
+		     (int) openflags);
+
+	if (not_open_usable(my_fd->openflags, openflags)) {
+
+		/* Drop the rwlock */
+		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+
+		if (retried) {
+			/* This really should never occur, it could occur
+			 * if there was some race with closing the file.
+			 */
+			LogDebug(COMPONENT_FSAL,
+				 "Retry failed, returning EBADF");
+			*has_lock = false;
+			return fsalstat(posix2fsal_error(EBADF), EBADF);
+		}
+
+		/* Switch to write lock on object to protect file descriptor.
+		 * By using trylock, we don't block if another thread is using
+		 * the file descriptor right now. In that case, we just open
+		 * a temporary file descriptor.
+		 *
+		 * This prevents us from blocking for the duration of an
+		 * I/O request.
+		 */
+		rc = pthread_rwlock_trywrlock(&obj_hdl->lock);
+		if (rc == EBUSY) {
+			/* Someone else is using the file descriptor.
+			 * Just provide a temporary file descriptor.
+			 * We still take a read lock so we can protect the
+			 * share reservation for the duration of the caller's
+			 * operation if we needed to check.
+			 */
+			if (check_share) {
+				PTHREAD_RWLOCK_rdlock(&obj_hdl->lock);
+
+				status = check_share_conflict(share,
+							      openflags,
+							      bypass);
+
+				if (FSAL_IS_ERROR(status)) {
+					PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+					LogDebug(COMPONENT_FSAL,
+						 "check_share_conflict failed with %s",
+						 msg_fsal_err(status.major));
+					*has_lock = false;
+					return status;
+				}
+			}
+
+			status = open_func(obj_hdl, openflags, *out_fd);
+
+			if (FSAL_IS_ERROR(status)) {
+				if (check_share)
+					PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+				*has_lock = false;
+				return status;
+			}
+
+			/* Return the temp fd, with the lock only held if
+			 * share reservations were checked.
+			 */
+			*closefd = true;
+			*has_lock = check_share;
+
+			return fsalstat(ERR_FSAL_NO_ERROR, 0);
+
+		} else if (rc != 0) {
+			LogCrit(COMPONENT_RW_LOCK,
+				"Error %d, write locking %p", rc, obj_hdl);
+			abort();
+		}
+
+		if (check_share) {
+			status = check_share_conflict(share, openflags, bypass);
+
+			if (FSAL_IS_ERROR(status)) {
+				PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+				LogDebug(COMPONENT_FSAL,
+					 "check_share_conflict failed with %s",
+					 msg_fsal_err(status.major));
+				*has_lock = false;
+				return status;
+			}
+		}
+
+		LogFullDebug(COMPONENT_FSAL,
+			     "Open mode = %x, desired mode = %x",
+			     (int) my_fd->openflags,
+			     (int) openflags);
+
+		if (not_open_usable(my_fd->openflags, openflags)) {
+			if (my_fd->openflags != FSAL_O_CLOSED) {
+				/* Add desired mode to existing mode. */
+				try_openflags = openflags | my_fd->openflags;
+
+				/* Now close the already open descriptor. */
+				status = close_func(obj_hdl, my_fd);
+
+				if (FSAL_IS_ERROR(status)) {
+					PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+					LogDebug(COMPONENT_FSAL,
+						 "close_func failed with %s",
+						 msg_fsal_err(status.major));
+					*has_lock = false;
+					return status;
+				}
+			} else if (openflags == FSAL_O_ANY) {
+				try_openflags = FSAL_O_READ;
+			} else {
+				try_openflags = openflags;
+			}
+
+			LogFullDebug(COMPONENT_FSAL,
+				     "try_openflags = %x",
+				     try_openflags);
+
+			/* Actually open the file */
+			status = open_func(obj_hdl, try_openflags, my_fd);
+
+			if (FSAL_IS_ERROR(status)) {
+				PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+				LogDebug(COMPONENT_FSAL,
+					 "open_func failed with %s",
+					 msg_fsal_err(status.major));
+				*has_lock = false;
+				return status;
+			}
+		}
+
+		/* Ok, now we should be in the correct mode.
+		 * Switch back to read lock and try again.
+		 * We don't want to hold the write lock because that would
+		 * block other users of the file descriptor.
+		 * Since we dropped the lock, we need to verify mode is still'
+		 * good after we re-aquire the read lock, thus the retry.
+		 */
+		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_rdlock(&obj_hdl->lock);
+		retried = true;
+
+		if (check_share) {
+			status = check_share_conflict(share, openflags, bypass);
+
+			if (FSAL_IS_ERROR(status)) {
+				PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+				LogDebug(COMPONENT_FSAL,
+					 "check_share_conflict failed with %s",
+					 msg_fsal_err(status.major));
+				*has_lock = false;
+				return status;
+			}
+		}
+		goto again;
+	}
+
+	/* Return the global fd, with the lock held. */
+	*out_fd = my_fd;
+	*has_lock = true;
+
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+}
+
+/**
+ * @brief Find a useable file descriptor for a regular file.
+ *
+ * This function specifically does NOT return with the obj_handle's lock
+ * held if the fd associated with a state_t is being used. These fds are
+ * considered totally separate from the global fd and don't need protection
+ * and should not interfere with other operations on the object.
+ *
+ * Optionally, out_fd can be NULL in which case a file is not actually
+ * opened, in this case, all that actually happens is the share reservation
+ * check (which may result in the lock being held).
+ *
+ * @param[in,out] out_fd         File descriptor that is to be used
+ * @param[in]     obj_hdl        File on which to operate
+ * @param[in]     my_fd          The file descriptor associated with the object
+ * @param[in]     bypass         If state doesn't indicate a share reservation,
+ *                               bypass any deny read
+ * @param[in]     state          state_t to use for this operation
+ * @param[in]     openflags      Mode for open
+ * @param[in]     open_func      Function to open a file descriptor
+ * @param[in]     close_func     Function to close a file descriptor
+ * @param[out]    has_lock       Indicates that obj_hdl->lock is held read
+ * @param[out]    need_fsync     Indicates that the file will need fsync
+ * @param[out]    closefd        Indicates that file descriptor must be closed
+ * @param[in]     open_for_locks Indicates file is open for locks
+ *
+ * @return FSAL status.
+ */
+
+fsal_status_t fsal_find_fd(struct fsal_fd **out_fd,
+			   struct fsal_obj_handle *obj_hdl,
+			   struct fsal_fd *obj_fd,
+			   struct fsal_share *share,
+			   bool bypass,
+			   struct state_t *state,
+			   fsal_openflags_t openflags,
+			   fsal_open_func open_func,
+			   fsal_close_func close_func,
+			   bool *has_lock,
+			   bool *need_fsync,
+			   bool *closefd,
+			   bool open_for_locks)
+{
+	fsal_status_t status = {ERR_FSAL_NO_ERROR, 0};
+	struct fsal_fd *state_fd;
+
+	if (state == NULL)
+		goto global;
+
+	/* Check if we can use the fd in the state */
+	state_fd = (struct fsal_fd *) (state + 1);
+
+	LogFullDebug(COMPONENT_FSAL,
+		     "state_fd->openflags = %d openflags = %d",
+		     state_fd->openflags, openflags);
+
+	if (open_correct(state_fd->openflags, openflags)) {
+		/* It was valid, return it.
+		 * Since we found a valid fd in the state, no need to
+		 * check deny modes.
+		 */
+		LogFullDebug(COMPONENT_FSAL, "Use state_fd %p", state_fd);
+		if (out_fd)
+			*out_fd = state_fd;
+		*need_fsync = (openflags & FSAL_O_SYNC) != 0;
+		*has_lock = false;
+		return status;
+	}
+
+	if (open_for_locks) {
+		if (state_fd->openflags != FSAL_O_CLOSED) {
+			LogCrit(COMPONENT_FSAL,
+				"Conflicting open, can not re-open fd with locks");
+			return fsalstat(posix2fsal_error(EINVAL), EINVAL);
+		}
+
+		/* This is being opened for locks, we will not be able to
+		 * re-open so open for read/write unless openstate indicates
+		 * something different.
+		 */
+		if (state->state_data.lock.openstate != NULL) {
+			struct fsal_fd *related_fd = (struct fsal_fd *)
+					(state->state_data.lock.openstate + 1);
+
+			openflags = related_fd->openflags & FSAL_O_RDWR;
+		} else {
+			/* No associated open, open read/write. */
+			openflags = FSAL_O_RDWR;
+		}
+
+		status = open_func(obj_hdl, openflags, state_fd);
+
+		if (FSAL_IS_ERROR(status)) {
+			LogCrit(COMPONENT_FSAL,
+				"Open for locking failed");
+		} else {
+			LogFullDebug(COMPONENT_FSAL,
+				     "Opened state_fd %p", state_fd);
+			*out_fd = state_fd;
+			*need_fsync = false;
+		}
+
+		*has_lock = false;
+		return status;
+	}
+
+	/* Check if there is a related state, in which case, can we use it's
+	 * fd (this will support FSALs that have an open file per open state
+	 * but don't bother with opening a separate file for the lock state).
+	 */
+	if ((state->state_type == STATE_TYPE_LOCK ||
+	     state->state_type == STATE_TYPE_NLM_LOCK) &&
+	    state->state_data.lock.openstate != NULL) {
+		struct fsal_fd *related_fd = (struct fsal_fd *)
+				(state->state_data.lock.openstate + 1);
+
+		LogFullDebug(COMPONENT_FSAL,
+			     "related_fd->openflags = %d openflags = %d",
+			     related_fd->openflags, openflags);
+
+		if (open_correct(related_fd->openflags, openflags)) {
+			/* It was valid, return it.
+			 * Since we found a valid fd in the open state, no
+			 * need to check deny modes.
+			 */
+			LogFullDebug(COMPONENT_FSAL,
+				     "Use related_fd %p", related_fd);
+			if (out_fd)
+				*out_fd = related_fd;
+
+			*need_fsync = (openflags & FSAL_O_SYNC) != 0;
+			*has_lock = false;
+			return status;
+		}
+	}
+
+ global:
+
+	/* No useable state_t so return the global file descriptor. */
+	LogFullDebug(COMPONENT_FSAL,
+		     "Use global fd openflags = %x",
+		     openflags);
+
+	/* We will take the object handle lock in vfs_reopen_obj.
+	 * And we won't have to fsync.
+	 */
+	*need_fsync = false;
+
+	/* Make sure global is open as necessary otherwise return a
+	 * temporary file descriptor. Check share reservation if not
+	 * opening FSAL_O_ANY.
+	 */
+	return fsal_reopen_obj(obj_hdl, openflags != FSAL_O_ANY, bypass,
+			       openflags, obj_fd, share, open_func, close_func,
+			       out_fd, has_lock, closefd);
+}
+
+/**
+ * @brief Check the exclusive create verifier for a file.
+ *
+ * The default behavior is to check verifier against atime and mtime.
+ *
+ * @param[in] st          POSIX attributes for the file (from stat)
+ * @param[in] verifier    Verifier to use for exclusive create
+ *
+ * @retval true if verifier matches
+ */
+
+bool check_verifier_stat(struct stat *st, fsal_verifier_t verifier)
+{
+	uint32_t verf_hi = 0, verf_lo = 0;
+
+	memcpy(&verf_hi,
+	       verifier,
+	       sizeof(uint32_t));
+	memcpy(&verf_lo,
+	       verifier + sizeof(uint32_t),
+	       sizeof(uint32_t));
+
+	LogFullDebug(COMPONENT_FSAL,
+		     "Passed verifier %"PRIx32" %"PRIx32
+		     " file verifier %"PRIx32" %"PRIx32,
+		     verf_hi, verf_lo,
+		     (uint32_t) st->st_atim.tv_sec,
+		     (uint32_t) st->st_mtim.tv_sec);
+
+	return st->st_atim.tv_sec == verf_hi &&
+	       st->st_mtim.tv_sec == verf_lo;
+}
+
+/**
+ * @brief Check the exclusive create verifier for a file.
+ *
+ * The default behavior is to check verifier against atime and mtime.
+ *
+ * @param[in] attrlist    Attributes for the file
+ * @param[in] verifier    Verifier to use for exclusive create
+ *
+ * @retval true if verifier matches
+ */
+
+bool check_verifier_attrlist(struct attrlist *attrs, fsal_verifier_t verifier)
+{
+	uint32_t verf_hi = 0, verf_lo = 0;
+
+	memcpy(&verf_hi,
+	       verifier,
+	       sizeof(uint32_t));
+	memcpy(&verf_lo,
+	       verifier + sizeof(uint32_t),
+	       sizeof(uint32_t));
+
+	LogFullDebug(COMPONENT_FSAL,
+		     "Passed verifier %"PRIx32" %"PRIx32
+		     " file verifier %"PRIx32" %"PRIx32,
+		     verf_hi, verf_lo,
+		     (uint32_t) attrs->atime.tv_sec,
+		     (uint32_t) attrs->mtime.tv_sec);
+
+	return attrs->atime.tv_sec == verf_hi &&
+	       attrs->mtime.tv_sec == verf_lo;
 }
 
 /** @} */

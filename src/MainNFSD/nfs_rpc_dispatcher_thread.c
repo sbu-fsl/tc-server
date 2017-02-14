@@ -36,6 +36,11 @@
 #include <sys/file.h>		/* for having FNDELAY */
 #include <sys/select.h>
 #include <poll.h>
+#ifdef RPC_VSOCK
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <linux/vm_sockets.h>
+#endif
 #include <assert.h>
 #include "hashtable.h"
 #include "log.h"
@@ -49,7 +54,6 @@
 #include "nfs_init.h"
 #include "nfs_core.h"
 #include "nfs_convert.h"
-#include "cache_inode.h"
 #include "nfs_exports.h"
 #include "nfs_proto_functions.h"
 #include "nfs_req_queue.h"
@@ -104,7 +108,7 @@ const char *xprt_stat_s[4] = {
  * @param[in] ptr_req Unused
  * @param[in] ptr_svc Unused
  */
-void nfs_rpc_dispatch_dummy(struct svc_req *ptr_req, SVCXPRT *ptr_svc)
+void nfs_rpc_dispatch_dummy(struct svc_req *req, SVCXPRT *xprt)
 {
 	LogMajor(COMPONENT_DISPATCH,
 		 "NFS DISPATCH DUMMY: Possible error, function nfs_rpc_dispatch_dummy should never be called");
@@ -115,6 +119,7 @@ const char *tags[] = {
 	"MNT",
 	"NLM",
 	"RQUOTA",
+	"NFS_VSOCK",
 };
 
 typedef struct proto_data {
@@ -145,6 +150,7 @@ SVCXPRT *tcp_xprt[P_COUNT];
 
 /* Flag to indicate if V6 interfaces on the host are enabled */
 bool v6disabled;
+bool vsock;
 
 /**
  * @brief Unregister an RPC program.
@@ -177,8 +183,10 @@ static void unregister_rpc(void)
 	} else {
 		unregister(nfs_param.core_param.program[P_NFS], NFS_V4, NFS_V4);
 	}
+#ifdef _USE_NLM
 	if (nfs_param.core_param.enable_NLM)
 		unregister(nfs_param.core_param.program[P_NLM], 1, NLM4_VERS);
+#endif /* _USE_NLM */
 	if (nfs_param.core_param.enable_RQUOTA) {
 		unregister(nfs_param.core_param.program[P_RQUOTA], RQUOTAVERS,
 			   EXT_RQUOTAVERS);
@@ -198,10 +206,12 @@ static inline bool nfs_protocol_enabled(protos p)
 			return true;
 		break;
 
+#ifdef _USE_NLM
 	case P_NLM: /* valid only for NFSv3 environments */
 		if (nfsv3 && nfs_param.core_param.enable_NLM)
 			return true;
 		break;
+#endif
 
 	case P_RQUOTA:
 		if (nfs_param.core_param.enable_RQUOTA)
@@ -236,6 +246,8 @@ static void close_rpc_fd(void)
 		if (tcp_socket[p] != -1)
 			close(tcp_socket[p]);
 	}
+	if (vsock)
+		close(tcp_socket[P_NFS_VSOCK]);
 }
 
 void Create_udp(protos prot)
@@ -299,6 +311,42 @@ void Create_tcp(protos prot)
 				       XPRT_PRIVATE_FLAG_NONE);
 }
 
+void create_vsock(void)
+{
+	tcp_xprt[P_NFS_VSOCK] =
+		svc_vc_create2(tcp_socket[P_NFS_VSOCK],
+			       nfs_param.core_param.rpc.max_send_buffer_size,
+			       nfs_param.core_param.rpc.max_recv_buffer_size,
+			       SVC_VC_CREATE_LISTEN);
+	if (tcp_xprt[P_NFS_VSOCK] == NULL)
+		LogFatal(COMPONENT_DISPATCH,
+			"Cannot allocate %s/TCP VSOCK SVCXPRT",
+			 tags[P_NFS_VSOCK]);
+
+	/* bind xprt to channel--unregister it from the global event
+	 * channel (if applicable) */
+	(void)svc_rqst_evchan_reg(rpc_evchan[TCP_RDVS_CHAN].chan_id,
+				  tcp_xprt[P_NFS_VSOCK],
+				SVC_RQST_FLAG_XPRT_UREG);
+
+	/* Hook xp_getreq */
+	(void)SVC_CONTROL(tcp_xprt[P_NFS_VSOCK], SVCSET_XP_GETREQ,
+			nfs_rpc_getreq_ng);
+
+	/* Hook xp_recv_user_data -- allocate new xprts to event channels */
+	(void)SVC_CONTROL(tcp_xprt[P_NFS_VSOCK], SVCSET_XP_RECV_USER_DATA,
+			  nfs_rpc_recv_user_data);
+
+	/* Hook xp_free_user_data (finalize/free private data) */
+	(void)SVC_CONTROL(tcp_xprt[P_NFS_VSOCK], SVCSET_XP_FREE_USER_DATA,
+			  nfs_rpc_free_user_data);
+
+	/* Setup private data */
+	(tcp_xprt[P_NFS_VSOCK])->xp_u1 =
+		alloc_gsh_xprt_private(tcp_xprt[P_NFS_VSOCK],
+				       XPRT_PRIVATE_FLAG_NONE);
+}
+
 /**
  * @brief Create the SVCXPRT for each protocol in use
  */
@@ -312,6 +360,10 @@ void Create_SVCXPRTs(void)
 			Create_udp(p);
 			Create_tcp(p);
 		}
+#ifdef RPC_VSOCK
+	if (vsock)
+		create_vsock();
+#endif /* RPC_VSOCK */
 }
 
 /**
@@ -490,9 +542,31 @@ static int Bind_sockets_V4(void)
 	return rc;
 }
 
+#ifdef RPC_VSOCK
+int bind_sockets_vsock(void)
+{
+	int rc = 0;
+
+	struct sockaddr_vm sa_listen = {
+		.svm_family = AF_VSOCK,
+		.svm_cid = VMADDR_CID_ANY,
+		.svm_port = nfs_param.core_param.port[P_NFS],
+	};
+
+	rc = bind(tcp_socket[P_NFS_VSOCK], (struct sockaddr *)
+		(struct sockaddr *)&sa_listen, sizeof(sa_listen));
+	if (rc == -1) {
+		LogWarn(COMPONENT_DISPATCH,
+			"cannot bind %s stream socket, error %d(%s)",
+			tags[P_NFS_VSOCK], errno, strerror(errno));
+	}
+	return rc;
+}
+#endif /* RPC_VSOCK */
+
 void Bind_sockets(void)
 {
-	int	rc = 0;
+	int rc = 0;
 
 	/*
 	 * See Allocate_sockets(), which should already
@@ -509,9 +583,17 @@ void Bind_sockets(void)
 			LogFatal(COMPONENT_DISPATCH,
 				 "Error binding to V6 interface. Cannot continue.");
 	}
-
+#ifdef RPC_VSOCK
+	if (vsock) {
+		rc = bind_sockets_vsock();
+		if (rc)
+			LogMajor(COMPONENT_DISPATCH,
+				"AF_VSOCK bind failed (continuing startup)");
+	}
+#endif /* RPC_VSOCK */
 	LogInfo(COMPONENT_DISPATCH,
-		"Bind_sockets() successful, v6disabled = %d", v6disabled);
+		"Bind_sockets() successful, v6disabled = %d, vsock = %d",
+		v6disabled, vsock);
 }
 
 /**
@@ -539,10 +621,22 @@ static int alloc_socket_setopts(int p)
 		       SOL_SOCKET, SO_REUSEADDR,
 		       &one, sizeof(one))) {
 		LogWarn(COMPONENT_DISPATCH,
-			"Bad tcp socket options for %s, error %d(%s)",
+			"Bad tcp socket option reuseaddr for %s, error %d(%s)",
 			tags[p], errno, strerror(errno));
 
 		return -1;
+	}
+
+	if (nfs_param.core_param.enable_tcp_keepalive) {
+		if (setsockopt(tcp_socket[p],
+			       SOL_SOCKET, SO_KEEPALIVE,
+			       &one, sizeof(one))) {
+			LogWarn(COMPONENT_DISPATCH,
+				"Bad tcp socket option keepalive for %s, error %d(%s)",
+				tags[p], errno, strerror(errno));
+
+			return -1;
+		}
 	}
 
 	/* We prefer using non-blocking socket
@@ -595,6 +689,35 @@ static int Allocate_sockets_V4(int p)
 	return 0;
 
 }
+
+#ifdef RPC_VSOCK
+/**
+ * @brief Create vmci stream socket
+ */
+static int allocate_socket_vsock(void)
+{
+	int one = 1;
+
+	tcp_socket[P_NFS_VSOCK] = socket(AF_VSOCK, SOCK_STREAM, 0);
+	if (tcp_socket[P_NFS_VSOCK] == -1) {
+		LogWarn(COMPONENT_DISPATCH,
+			"socket create failed for %s, error %d(%s)",
+			tags[P_NFS_VSOCK], errno, strerror(errno));
+		return -1;
+	}
+	if (setsockopt(tcp_socket[P_NFS_VSOCK],
+			SOL_SOCKET, SO_REUSEADDR,
+			&one, sizeof(one))) {
+		LogWarn(COMPONENT_DISPATCH,
+			"bad tcp socket options for %s, error %d(%s)",
+			tags[P_NFS_VSOCK], errno, strerror(errno));
+
+		return -1;
+	}
+
+	return 0;
+}
+#endif /* RPC_VSOCK */
 
 /**
  * @brief Allocate the tcp and udp sockets for the nfs daemon
@@ -677,6 +800,10 @@ try_V4:
 			}
 		}
 	}
+#ifdef RPC_VSOCK
+	if (vsock)
+		allocate_socket_vsock();
+#endif /* RPC_VSOCK */
 }
 
 /* The following routine must ONLY be called from the shutdown
@@ -743,6 +870,17 @@ void Register_program(protos prot, int flag, int vers)
 	}
 }
 
+tirpc_pkg_params ntirpc_pp = {
+	0,
+	0,
+	(mem_format_t)rpc_warnx,
+	gsh_free_size,
+	gsh_malloc__,
+	gsh_malloc_aligned__,
+	gsh_calloc__,
+	gsh_realloc__,
+};
+
 /**
  * @brief Init the svc descriptors for the nfs daemon
  *
@@ -770,6 +908,16 @@ void nfs_Init_svc(void)
 	v6disabled = false;
 #endif
 
+	/* Set TIRPC debug flags */
+	ntirpc_pp.debug_flags = nfs_param.core_param.rpc.debug_flags;
+
+	/* Redirect TI-RPC allocators, log channel */
+	if (!tirpc_control(TIRPC_PUT_PARAMETERS, &ntirpc_pp))
+		LogCrit(COMPONENT_INIT, "Setting nTI-RPC parameters failed");
+#ifdef RPC_VSOCK
+	vsock = nfs_param.core_param.core_options & CORE_OPTION_NFS_VSOCK;
+#endif
+
 	/* New TI-RPC package init function */
 	svc_params.flags = SVC_INIT_EPOLL;	/* use EPOLL event mgmt */
 	svc_params.flags |= SVC_INIT_NOREG_XPRTS; /* don't call xprt_register */
@@ -778,37 +926,19 @@ void nfs_Init_svc(void)
 	svc_params.svc_ioq_maxbuf =
 	    nfs_param.core_param.rpc.max_send_buffer_size;
 	svc_params.idle_timeout = nfs_param.core_param.rpc.idle_timeout_s;
-	svc_params.warnx = NULL;
-	svc_params.gss_ctx_hash_partitions = 17;
-	svc_params.gss_max_idle_gen = 1024;	/* GSS ctx cache expiration */
-	svc_params.gss_max_gc = 200;
 	svc_params.ioq_thrd_max = /* max ioq worker threads */
 		nfs_param.core_param.rpc.ioq_thrd_max;
+	/* GSS ctx cache tuning, expiration */
+	svc_params.gss_ctx_hash_partitions =
+		nfs_param.core_param.rpc.gss.ctx_hash_partitions;
+	svc_params.gss_max_ctx =
+		nfs_param.core_param.rpc.gss.max_ctx;
+	svc_params.gss_max_gc =
+		nfs_param.core_param.rpc.gss.max_gc;
 
+	/* Only after TI-RPC allocators, log channel are setup */
 	if (!svc_init(&svc_params))
 		LogFatal(COMPONENT_INIT, "SVC initialization failed");
-
-	/* Redirect TI-RPC allocators, log channel */
-	if (!tirpc_control(TIRPC_SET_WARNX, (warnx_t) rpc_warnx))
-		LogCrit(COMPONENT_INIT, "Failed redirecting TI-RPC __warnx");
-
-	/* Set TIRPC debug flags */
-	uint32_t tirpc_debug_flags = nfs_param.core_param.rpc.debug_flags;
-
-	if (!tirpc_control(TIRPC_SET_DEBUG_FLAGS, &tirpc_debug_flags))
-		LogCrit(COMPONENT_INIT, "Failed setting TI-RPC debug flags");
-
-#define TIRPC_SET_ALLOCATORS 0
-#if TIRPC_SET_ALLOCATORS
-	if (!tirpc_control(TIRPC_SET_MALLOC, (mem_alloc_t) gsh_malloc))
-		LogCrit(COMPONENT_INIT, "Failed redirecting TI-RPC alloc");
-
-	if (!tirpc_control(TIRPC_SET_MEM_FREE, (mem_free_t) gsh_free_size))
-		LogCrit(COMPONENT_INIT, "Failed redirecting TI-RPC mem_free");
-
-	if (!tirpc_control(TIRPC_SET_FREE, (std_free_t) gsh_free))
-		LogCrit(COMPONENT_INIT, "Failed redirecting TI-RPC __free");
-#endif				/* TIRPC_SET_ALLOCATORS */
 
 	for (ix = 0; ix < N_EVENT_CHAN; ++ix) {
 		rpc_evchan[ix].chan_id = 0;
@@ -865,16 +995,22 @@ void nfs_Init_svc(void)
 		/* Some log that can be useful when debug ONC/RPC
 		 * and RPCSEC_GSS matter */
 		LogDebug(COMPONENT_DISPATCH,
-			 "Socket numbers are: nfs_udp=%u  nfs_tcp=%u mnt_udp=%u  mnt_tcp=%u nlm_tcp=%u nlm_udp=%u",
-			 udp_socket[P_NFS], tcp_socket[P_NFS],
-			 udp_socket[P_MNT], tcp_socket[P_MNT],
-			 udp_socket[P_NLM], tcp_socket[P_NLM]);
+			"Socket numbers are: nfs_udp=%u nfs_tcp=%u nfs_vsock=%u mnt_udp=%u mnt_tcp=%u nlm_tcp=%u nlm_udp=%u",
+			udp_socket[P_NFS],
+			tcp_socket[P_NFS],
+			tcp_socket[P_NFS_VSOCK],
+			udp_socket[P_MNT],
+			tcp_socket[P_MNT],
+			udp_socket[P_NLM],
+			tcp_socket[P_NLM]);
 	} else {
 		/* Some log that can be useful when debug ONC/RPC
 		 * and RPCSEC_GSS matter */
 		LogDebug(COMPONENT_DISPATCH,
-			 "Socket numbers are: nfs_udp=%u  nfs_tcp=%u",
-			 udp_socket[P_NFS], tcp_socket[P_NFS]);
+			 "Socket numbers are: nfs_udp=%u nfs_tcp=%u nfs_vsock=%u",
+			udp_socket[P_NFS],
+			tcp_socket[P_NFS],
+			tcp_socket[P_NFS_VSOCK]);
 	}
 
 	/* Some log that can be useful when debug ONC/RPC
@@ -925,12 +1061,16 @@ void nfs_Init_svc(void)
 #ifndef _NO_PORTMAPPER
 	/* Perform all the RPC registration, for UDP and TCP,
 	 * for NFS_V2, NFS_V3 and NFS_V4 */
+#ifdef _USE_NFS3
 	Register_program(P_NFS, CORE_OPTION_NFSV3, NFS_V3);
+#endif /* _USE_NFS3 */
 	Register_program(P_NFS, CORE_OPTION_NFSV4, NFS_V4);
 	Register_program(P_MNT, CORE_OPTION_NFSV3, MOUNT_V1);
 	Register_program(P_MNT, CORE_OPTION_NFSV3, MOUNT_V3);
+#ifdef _USE_NLM
 	if (nfs_param.core_param.enable_NLM)
 		Register_program(P_NLM, CORE_OPTION_NFSV3, NLM4_VERS);
+#endif /* _USE_NLM */
 	if (nfs_param.core_param.enable_RQUOTA &&
 	    (nfs_param.core_param.core_options & (CORE_OPTION_NFSV3 |
 						  CORE_OPTION_NFSV4))) {
@@ -1293,7 +1433,7 @@ void nfs_rpc_enqueue_req(request_data_t *reqdata)
 	++(q->size);
 	pthread_spin_unlock(&q->sp);
 
-	atomic_inc_uint32_t(&enqueued_reqs);
+	(void) atomic_inc_uint32_t(&enqueued_reqs);
 
 #if defined(HAVE_BLKIN)
 	/* log the queue depth */
@@ -1454,7 +1594,7 @@ request_data_t *nfs_rpc_dequeue_req(nfs_worker_data_t *worker)
 		/* anything? */
 		reqdata = nfs_rpc_consume_req(qpair);
 		if (reqdata) {
-			atomic_inc_uint32_t(&dequeued_reqs);
+			(void) atomic_inc_uint32_t(&dequeued_reqs);
 			break;
 		}
 
@@ -1538,13 +1678,7 @@ request_data_t *nfs_rpc_dequeue_req(nfs_worker_data_t *worker)
  */
 static inline request_data_t *alloc_nfs_request(SVCXPRT *xprt)
 {
-	request_data_t *reqdata = pool_alloc(request_pool, NULL);
-
-	if (!reqdata) {
-		LogMajor(COMPONENT_DISPATCH,
-			 "Unable to allocate request. Exiting...");
-		Fatal();
-	}
+	request_data_t *reqdata = pool_alloc(request_pool);
 
 	/* set the request as NFS already-read */
 	reqdata->rtype = NFS_REQUEST;
@@ -1553,9 +1687,6 @@ static inline request_data_t *alloc_nfs_request(SVCXPRT *xprt)
 	reqdata->r_u.req.svc.rq_xprt = xprt;
 	reqdata->r_u.req.svc.rq_daddr_len = 0;
 	reqdata->r_u.req.svc.rq_raddr_len = 0;
-
-	/* set up xprt */
-	reqdata->r_u.req.xprt = xprt;
 
 	return reqdata;
 }
@@ -1577,70 +1708,6 @@ static inline void free_nfs_request(request_data_t *reqdata)
 	pool_free(request_pool, reqdata);
 }
 
-/* forward declaration in lieu of moving code */
-static int nfs_rpc_get_args(nfs_request_t *);
-
-static inline enum auth_stat AuthenticateRequest(nfs_request_t *reqnfs,
-						 bool *no_dispatch)
-{
-	struct rpc_msg *msg = reqnfs->svc.rq_msg;
-	SVCXPRT *xprt = reqnfs->xprt;
-	enum auth_stat why;
-	bool rlocked = true;
-	bool slocked = false;
-
-	/* A few words of explanation are required here:
-	 * In authentication is AUTH_NONE or AUTH_UNIX, then the value of
-	 * no_dispatch remains false and the request is proceeded normally.
-	 * If authentication is RPCSEC_GSS, no_dispatch may have value true,
-	 * this means that gc->gc_proc != RPCSEC_GSS_DATA and that the message
-	 * is in fact an internal negociation message from RPCSEC_GSS using
-	 * GSSAPI. It then should not be proceed by the worker and SVC_STAT
-	 * should be returned to the dispatcher.
-	 */
-
-	*no_dispatch = false;
-
-	reqnfs->svc.rq_xprt = reqnfs->xprt;
-	reqnfs->svc.rq_prog = msg->rm_call.cb_prog;
-	reqnfs->svc.rq_vers = msg->rm_call.cb_vers;
-	reqnfs->svc.rq_proc = msg->rm_call.cb_proc;
-	reqnfs->svc.rq_xid = msg->rm_xid;
-
-	LogFullDebug(COMPONENT_DISPATCH,
-		     "About to authenticate Prog=%d, vers=%d, proc=%d xid=%u xprt=%p",
-		     (int)reqnfs->svc.rq_prog,
-		     (int)reqnfs->svc.rq_vers,
-		     (int)reqnfs->svc.rq_proc,
-		     reqnfs->svc.rq_xid,
-		     reqnfs->svc.rq_xprt);
-
-	why = svc_auth_authenticate(&reqnfs->svc, msg, no_dispatch);
-	if (why != AUTH_OK) {
-		LogInfo(COMPONENT_DISPATCH,
-			"Could not authenticate request... rejecting with AUTH_STAT=%s",
-			auth_stat2str(why));
-		DISP_SLOCK2(xprt);
-		svcerr_auth(xprt, &reqnfs->svc, why);
-		DISP_SUNLOCK(xprt);
-		*no_dispatch = true;
-		return why;
-	} else {
-#ifdef _HAVE_GSSAPI
-		struct rpc_gss_cred *gc;
-
-		if (reqnfs->svc.rq_verf.oa_flavor == RPCSEC_GSS) {
-			gc = (struct rpc_gss_cred *)reqnfs->svc.rq_clntcred;
-			LogFullDebug(COMPONENT_DISPATCH,
-				     "AuthenticateRequest no_dispatch=%d gc->gc_proc=(%u) %s",
-				     *no_dispatch, gc->gc_proc,
-				     str_gc_proc(gc->gc_proc));
-		}
-#endif
-	} /* else from if( ( why = _authenticate( preq, pmsg) ) != AUTH_OK) */
-	return AUTH_OK;
-}
-
 /**
  * @brief Helper function to validate rpc calls.
  *
@@ -1648,50 +1715,53 @@ static inline enum auth_stat AuthenticateRequest(nfs_request_t *reqnfs,
  * Reply at svc level on errors.  On return false will bypass straight to
  * returning error.
  *
- * @param[in] reqnfs Request to validate
+ * @param[in] req Request to validate
  *
  * @return True if the request is valid, false otherwise.
  */
-static bool is_rpc_call_valid(nfs_request_t *reqnfs)
+static bool is_rpc_call_valid(struct svc_req *req)
 {
-	bool slocked = false;
 	/* This function is only ever called from one point, and the
 	   read-lock is always held at that call.  If this changes,
 	   we'll have to pass in the value of rlocked. */
-	bool rlocked = true;
 	int lo_vers, hi_vers;
 
-	if (reqnfs->svc.rq_prog == nfs_param.core_param.program[P_NFS]) {
-		if (reqnfs->svc.rq_vers == NFS_V3) {
+	if (req->rq_prog == nfs_param.core_param.program[P_NFS]) {
+		if (req->rq_vers == NFS_V3) {
+#ifdef _USE_NFS3
 			if ((nfs_param.core_param.
 			     core_options & CORE_OPTION_NFSV3)
-			    && reqnfs->svc.rq_proc <= NFSPROC3_COMMIT)
+			    && req->rq_proc <= NFSPROC3_COMMIT)
 				return true;
 			else
+#endif /* _USE_NFS3 */
 				goto noproc_err;
-		} else if (reqnfs->svc.rq_vers == NFS_V4) {
+		} else if (req->rq_vers == NFS_V4) {
 			if ((nfs_param.core_param.
 			     core_options & CORE_OPTION_NFSV4)
-			    && reqnfs->svc.rq_proc <= NFSPROC4_COMPOUND)
+			    && req->rq_proc <= NFSPROC4_COMPOUND)
 				return true;
 			else
 				goto noproc_err;
 		} else { /* version error, set the range and throw the error */
 			lo_vers = NFS_V4;
 			hi_vers = NFS_V3;
+#ifdef _USE_NFS3
 			if ((nfs_param.core_param.
 			     core_options & CORE_OPTION_NFSV3) != 0)
 				lo_vers = NFS_V3;
+#endif /* _USE_NFS3 */
 			if ((nfs_param.core_param.
 			     core_options & CORE_OPTION_NFSV4) != 0)
 				hi_vers = NFS_V4;
 			goto progvers_err;
 		}
-	} else if (reqnfs->svc.rq_prog == nfs_param.core_param.program[P_NLM]
+	} else if (req->rq_prog == nfs_param.core_param.program[P_NLM]
+#ifdef _USE_NLM
 		   && ((nfs_param.core_param.core_options & CORE_OPTION_NFSV3)
 		       != 0)) {
-		if (reqnfs->svc.rq_vers == NLM4_VERS) {
-			if (reqnfs->svc.rq_proc <= NLMPROC4_FREE_ALL)
+		if (req->rq_vers == NLM4_VERS) {
+			if (req->rq_proc <= NLMPROC4_FREE_ALL)
 				return true;
 			else
 				goto noproc_err;
@@ -1700,7 +1770,8 @@ static bool is_rpc_call_valid(nfs_request_t *reqnfs)
 			hi_vers = NLM4_VERS;
 			goto progvers_err;
 		}
-	} else if (reqnfs->svc.rq_prog == nfs_param.core_param.program[P_MNT]
+	} else if (req->rq_prog == nfs_param.core_param.program[P_MNT]
+#endif /* _USE_NLM */
 		   && ((nfs_param.core_param.core_options & CORE_OPTION_NFSV3)
 		       != 0)) {
 		/* Some clients may use the wrong mount version to umount, so
@@ -1709,14 +1780,14 @@ static bool is_rpc_call_valid(nfs_request_t *reqnfs)
 		 * dump and export, so just disallow mount if version not
 		 * supported.
 		 */
-		if (reqnfs->svc.rq_vers == MOUNT_V3) {
-			if (reqnfs->svc.rq_proc <= MOUNTPROC3_EXPORT)
+		if (req->rq_vers == MOUNT_V3) {
+			if (req->rq_proc <= MOUNTPROC3_EXPORT)
 				return true;
 			else
 				goto noproc_err;
-		} else if (reqnfs->svc.rq_vers == MOUNT_V1) {
-			if (reqnfs->svc.rq_proc <= MOUNTPROC2_EXPORT
-			    && reqnfs->svc.rq_proc != MOUNTPROC2_MNT)
+		} else if (req->rq_vers == MOUNT_V1) {
+			if (req->rq_proc <= MOUNTPROC2_EXPORT
+			    && req->rq_proc != MOUNTPROC2_MNT)
 				return true;
 			else
 				goto noproc_err;
@@ -1725,15 +1796,15 @@ static bool is_rpc_call_valid(nfs_request_t *reqnfs)
 			hi_vers = MOUNT_V3;
 			goto progvers_err;
 		}
-	} else if (reqnfs->svc.rq_prog
+	} else if (req->rq_prog
 		   == nfs_param.core_param.program[P_RQUOTA]) {
-		if (reqnfs->svc.rq_vers == RQUOTAVERS) {
-			if (reqnfs->svc.rq_proc <= RQUOTAPROC_SETACTIVEQUOTA)
+		if (req->rq_vers == RQUOTAVERS) {
+			if (req->rq_proc <= RQUOTAPROC_SETACTIVEQUOTA)
 				return true;
 			else
 				goto noproc_err;
-		} else if (reqnfs->svc.rq_vers == EXT_RQUOTAVERS) {
-			if (reqnfs->svc.rq_proc <= RQUOTAPROC_SETACTIVEQUOTA)
+		} else if (req->rq_vers == EXT_RQUOTAVERS) {
+			if (req->rq_proc <= RQUOTAPROC_SETACTIVEQUOTA)
 				return true;
 			else
 				goto noproc_err;
@@ -1743,53 +1814,44 @@ static bool is_rpc_call_valid(nfs_request_t *reqnfs)
 			goto progvers_err;
 		}
 	} else {		/* No such program */
-		/* xprt == NULL??? */
-		if (reqnfs->xprt != NULL) {
-			LogFullDebug(COMPONENT_DISPATCH,
-				     "Invalid Program number #%d",
-				     (int)reqnfs->svc.rq_prog);
-			DISP_SLOCK2(reqnfs->xprt);
-			svcerr_noprog(reqnfs->xprt, &reqnfs->svc);
-			DISP_SUNLOCK2(reqnfs->xprt);
-		}
+		LogFullDebug(COMPONENT_DISPATCH,
+			     "Invalid Program number #%d",
+			     (int)req->rq_prog);
+		svcerr_noprog(req->rq_xprt, req);
 		return false;
 	}
 
  progvers_err:
-	/* xprt == NULL??? */
-	if (reqnfs->xprt != NULL) {
-		LogFullDebug(COMPONENT_DISPATCH,
-			     "Invalid protocol Version #%d for program number #%d",
-			     (int)reqnfs->svc.rq_vers,
-			     (int)reqnfs->svc.rq_prog);
-		DISP_SLOCK(reqnfs->xprt);
-		svcerr_progvers(reqnfs->xprt, &reqnfs->svc, lo_vers, hi_vers);
-		DISP_SUNLOCK(reqnfs->xprt);
-	}
+	LogFullDebug(COMPONENT_DISPATCH,
+		     "Invalid protocol Version #%d for program number #%d",
+		     (int)req->rq_vers,
+		     (int)req->rq_prog);
+	svcerr_progvers(req->rq_xprt, req, lo_vers, hi_vers);
 	return false;
 
  noproc_err:
-	/* xprt == NULL??? */
-	if (reqnfs->xprt != NULL) {
-		LogFullDebug(COMPONENT_DISPATCH,
-			     "Invalid protocol program number #%d",
-			     (int)reqnfs->svc.rq_prog);
-		DISP_SLOCK(reqnfs->xprt);
-		svcerr_noproc(reqnfs->xprt, &reqnfs->svc);
-		DISP_SUNLOCK(reqnfs->xprt);
-	}
+	LogFullDebug(COMPONENT_DISPATCH,
+		     "Invalid protocol program number #%d",
+		     (int)req->rq_prog);
+	svcerr_noproc(req->rq_xprt, req);
 	return false;
 }				/* is_rpc_call_valid */
 
 enum xprt_stat thr_decode_rpc_request(void *context, SVCXPRT *xprt)
 {
 	request_data_t *reqdata;
+	enum auth_stat why;
 	enum xprt_stat stat = XPRT_IDLE;
-	bool no_dispatch = true;
+	bool no_dispatch = false;
 	bool rlocked = false;
 	bool enqueued = false;
 	bool recv_status;
 
+	if (!xprt) {
+		LogCrit(COMPONENT_DISPATCH,
+			"missing xprt!");
+		return XPRT_DIED;
+	}
 	LogDebug(COMPONENT_DISPATCH,
 		 "%p context %p",
 		 xprt, context);
@@ -1827,7 +1889,7 @@ enum xprt_stat thr_decode_rpc_request(void *context, SVCXPRT *xprt)
 	LogFullDebug(COMPONENT_DISPATCH,
 		     "SVC_RECV on socket %d returned %s, xid=%u", xprt->xp_fd,
 		     (recv_status) ? "true" : "false",
-		     (reqdata->r_u.req.svc.rq_msg)
+		     (recv_status && reqdata->r_u.req.svc.rq_msg)
 		     ? reqdata->r_u.req.svc.rq_msg->rm_xid
 		     : 0);
 
@@ -1881,16 +1943,73 @@ enum xprt_stat thr_decode_rpc_request(void *context, SVCXPRT *xprt)
 	/* XXX so long as nfs_rpc_get_funcdesc calls is_rpc_call_valid
 	 * and fails if that call fails, there is no reason to call that
 	 * function again, below */
-	if (!is_rpc_call_valid(&reqdata->r_u.req))
+	if (!is_rpc_call_valid(&reqdata->r_u.req.svc))
 		goto finish;
 
 	reqdata->r_u.req.funcdesc = nfs_rpc_get_funcdesc(&reqdata->r_u.req);
-	if (AuthenticateRequest(&reqdata->r_u.req, &no_dispatch) != AUTH_OK
-	 || no_dispatch)
-		goto finish;
 
-	if (!nfs_rpc_get_args(&reqdata->r_u.req))
+	LogFullDebug(COMPONENT_DISPATCH,
+		     "About to authenticate Prog=%d, vers=%d, proc=%d xid=%u xprt=%p",
+		     (int)reqdata->r_u.req.svc.rq_prog,
+		     (int)reqdata->r_u.req.svc.rq_vers,
+		     (int)reqdata->r_u.req.svc.rq_proc,
+		     reqdata->r_u.req.svc.rq_xid,
+		     xprt);
+
+	/* If authentication is AUTH_NONE or AUTH_UNIX, then the value of
+	 * no_dispatch remains false and the request proceeds normally.
+	 *
+	 * If authentication is RPCSEC_GSS, no_dispatch may have value true,
+	 * this means that gc->gc_proc != RPCSEC_GSS_DATA and that the message
+	 * is in fact an internal negotiation message from RPCSEC_GSS using
+	 * GSSAPI. It should not be processed by the worker and SVC_STAT
+	 * should be returned to the dispatcher.
+	 */
+	why = svc_auth_authenticate(&reqdata->r_u.req.svc,
+				    reqdata->r_u.req.svc.rq_msg,
+				    &no_dispatch);
+	if (why != AUTH_OK) {
+		LogInfo(COMPONENT_DISPATCH,
+			"Could not authenticate request... rejecting with AUTH_STAT=%s",
+			auth_stat2str(why));
+		svcerr_auth(xprt, &reqdata->r_u.req.svc, why);
 		goto finish;
+#ifdef _HAVE_GSSAPI
+	} else if (reqdata->r_u.req.svc.rq_verf.oa_flavor == RPCSEC_GSS) {
+		struct rpc_gss_cred *gc = (struct rpc_gss_cred *)
+			reqdata->r_u.req.svc.rq_clntcred;
+		LogFullDebug(COMPONENT_DISPATCH,
+			     "RPCSEC_GSS no_dispatch=%d gc->gc_proc=(%u) %s",
+			     no_dispatch, gc->gc_proc,
+			     str_gc_proc(gc->gc_proc));
+		if (no_dispatch)
+			goto finish;
+#endif
+	}
+
+	/*
+	 * Extract RPC argument.
+	 */
+	memset(&reqdata->r_u.req.arg_nfs, 0, sizeof(nfs_arg_t));
+
+	LogFullDebug(COMPONENT_DISPATCH,
+		     "Before SVC_GETARGS on socket %d, xprt=%p",
+		     xprt->xp_fd, xprt);
+
+	if (!SVC_GETARGS(xprt, &reqdata->r_u.req.svc,
+			 reqdata->r_u.req.funcdesc->xdr_decode_func,
+			 &reqdata->r_u.req.arg_nfs,
+			 &reqdata->r_u.req.lookahead)) {
+		LogInfo(COMPONENT_DISPATCH,
+			"SVC_GETARGS failed for Program %d, Version %d, Function %d xid=%u",
+			(int)reqdata->r_u.req.svc.rq_prog,
+			(int)reqdata->r_u.req.svc.rq_vers,
+			(int)reqdata->r_u.req.svc.rq_proc,
+			reqdata->r_u.req.svc.rq_xid);
+
+		svcerr_decode(xprt, &reqdata->r_u.req.svc);
+		goto finish;
+	}
 
 	if (context) {
 		/* already running worker thread, do not enqueue */
@@ -2125,37 +2244,3 @@ static void *rpc_dispatcher_thread(void *arg)
 
 	return NULL;
 }				/* rpc_dispatcher_thread */
-
-/*
- * Extract RPC argument.
- */
-static int nfs_rpc_get_args(nfs_request_t *reqnfs)
-{
-	SVCXPRT *xprt = reqnfs->xprt;
-	nfs_arg_t *arg_nfs = &reqnfs->arg_nfs;
-	bool rlocked = true;
-	bool slocked = false;
-
-	memset(arg_nfs, 0, sizeof(nfs_arg_t));
-
-	LogFullDebug(COMPONENT_DISPATCH,
-		     "Before svc_getargs on socket %d, xprt=%p",
-		     xprt->xp_fd, xprt);
-
-	if (!svc_getargs(xprt, &reqnfs->svc, reqnfs->funcdesc->xdr_decode_func,
-			(caddr_t) arg_nfs, &reqnfs->lookahead)) {
-		LogInfo(COMPONENT_DISPATCH,
-			"svc_getargs failed for Program %d, Version %d, Function %d xid=%u",
-			(int)reqnfs->svc.rq_prog,
-			(int)reqnfs->svc.rq_vers,
-			(int)reqnfs->svc.rq_proc,
-			reqnfs->svc.rq_xid);
-		/* XXX move this, removing need for thr_ctx */
-		DISP_SLOCK2(xprt);
-		svcerr_decode(xprt, &reqnfs->svc);
-		DISP_SUNLOCK(xprt);
-		return false;
-	}
-
-	return true;
-}

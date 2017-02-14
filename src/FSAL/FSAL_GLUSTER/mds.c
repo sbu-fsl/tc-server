@@ -200,7 +200,7 @@ static nfsstat4 pnfs_layout_get(struct fsal_obj_handle          *obj_pub,
 		return NFS4ERR_INVAL;
 	}
 
-	/* TODO: When more than one client tries access the same layout
+	/** @todo: When more than one client tries access the same layout
 	 *       for the write operation, then last write will overwrite
 	 *       for the write operation, then last write will overwrite
 	 *       the previous ones, the MDS should intelligently deal
@@ -225,7 +225,7 @@ static nfsstat4 pnfs_layout_get(struct fsal_obj_handle          *obj_pub,
 	ds_desc.addr     = &ds_wire;
 	ds_desc.len      = sizeof(struct glfs_ds_wire);
 	nfs_status = FSAL_encode_file_layout(loc_body, &deviceid, util, 0, 0,
-					     &req_ctx->export->export_id, 1,
+					     &req_ctx->ctx_export->export_id, 1,
 					     &ds_desc);
 	if (nfs_status) {
 		LogMajor(COMPONENT_PNFS,
@@ -427,7 +427,7 @@ nfsstat4 getdeviceinfo(struct fsal_module *fsal_hdl,
 	return nfs_status;
 	}
 
-	/* TODO : Here information about Data-Server where file resides
+	/** @todo: Here information about Data-Server where file resides
 	 *        is only send from MDS.If that Data-Server is down then
 	 *        read or write will performed through MDS.
 	 *        Instead should we send the information about all
@@ -580,6 +580,13 @@ select_ds(struct glfs_object *object, char *pathinfo, char *hostname,
 			break;
 	}
 
+	if (no_of_ds == 0) {
+		LogCrit(COMPONENT_PNFS,
+			"Invalid pathinfo(%s) attribute found while selecting DS.",
+			pathinfo);
+		goto out;
+	}
+
 	ret = glfs_h_extract_handle(object, key, GFAPI_HANDLE_LENGTH);
 	if (ret < 0)
 		goto out;
@@ -603,9 +610,9 @@ select_ds(struct glfs_object *object, char *pathinfo, char *hostname,
 	while (++start != end)
 		hostname[i++] = *start;
 	ret = 0;
+	LogDebug(COMPONENT_PNFS, "hostname %s", hostname);
 
 out:
-	LogDebug(COMPONENT_PNFS, "hostname %s", hostname);
 	return ret;
 }
 

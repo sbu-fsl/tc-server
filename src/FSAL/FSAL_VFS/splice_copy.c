@@ -23,7 +23,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <stdint.h>
 #include <errno.h>
 
 ssize_t splice_copy_file(const char *src, size_t offset, size_t count,
@@ -38,7 +37,7 @@ ssize_t splice_copy_file(const char *src, size_t offset, size_t count,
 	if (srcfd < 0) {
 		return -errno;
 	}
-	if (count == UINT64_MAX) {
+	if (count == 0) {
 		if (fstat(srcfd, &st) < 0) {
 			close(srcfd);
 			return -errno;

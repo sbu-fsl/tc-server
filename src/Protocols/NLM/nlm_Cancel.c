@@ -45,7 +45,7 @@
 int nlm4_Cancel(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 {
 	nlm4_cancargs *arg = &args->arg_nlm4_cancel;
-	cache_entry_t *entry;
+	struct fsal_obj_handle *obj;
 	state_status_t state_status = STATE_SUCCESS;
 	char buffer[MAXNETOBJ_SZ * 2];
 	state_nsm_client_t *nsm_client;
@@ -58,7 +58,7 @@ int nlm4_Cancel(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 	 * responding to an NLM_*_MSG call, so we check here if the export is
 	 * NULL and if so, handle the response.
 	 */
-	if (op_ctx->export == NULL) {
+	if (op_ctx->ctx_export == NULL) {
 		res->res_nlm4.stat.stat = NLM4_STALE_FH;
 		LogInfo(COMPONENT_NLM, "INVALID HANDLE: nlm4_Cancel");
 		return NFS_REQ_OK;
@@ -71,13 +71,7 @@ int nlm4_Cancel(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 		 (int)arg->alock.svid, (unsigned long long)arg->alock.l_offset,
 		 (unsigned long long)arg->alock.l_len, buffer);
 
-	if (!copy_netobj(&res->res_nlm4test.cookie, &arg->cookie)) {
-		res->res_nlm4.stat.stat = NLM4_FAILED;
-		LogDebug(COMPONENT_NLM,
-			 "REQUEST RESULT: nlm4_Test %s",
-			 lock_result_str(res->res_nlm4.stat.stat));
-		return NFS_REQ_OK;
-	}
+	copy_netobj(&res->res_nlm4test.cookie, &arg->cookie);
 
 	if (nfs_in_grace()) {
 		res->res_nlm4.stat.stat = NLM4_DENIED_GRACE_PERIOD;
@@ -92,7 +86,7 @@ int nlm4_Cancel(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 				    arg->exclusive,
 				    &arg->alock,
 				    &lock,
-				    &entry,
+				    &obj,
 				    CARE_NOT,
 				    &nsm_client,
 				    &nlm_client,
@@ -111,7 +105,7 @@ int nlm4_Cancel(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 		return NFS_REQ_OK;
 	}
 
-	state_status = state_cancel(entry, nlm_owner, &lock);
+	state_status = state_cancel(obj, nlm_owner, &lock);
 	if (state_status != STATE_SUCCESS) {
 		/* Cancel could fail in the FSAL and make a bit of a mess,
 		 * especially if we are in out of memory situation. Such an
@@ -127,7 +121,7 @@ int nlm4_Cancel(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 	dec_nsm_client_ref(nsm_client);
 	dec_nlm_client_ref(nlm_client);
 	dec_state_owner_ref(nlm_owner);
-	cache_inode_put(entry);
+	obj->obj_ops.put_ref(obj);
 
 	LogDebug(COMPONENT_NLM,
 		 "REQUEST RESULT: nlm4_Cancel %s",

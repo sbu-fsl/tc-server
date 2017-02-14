@@ -270,7 +270,6 @@ static fsal_status_t fsal_acl_2_panfs_acl(struct attrlist *attrib,
 		struct pan_fs_acl_s *panacl)
 {
 	fsal_errors_t ret = ERR_FSAL_NO_ERROR;
-	fsal_acl_status_t status;
 	struct pan_fs_ace_s *panace;
 	fsal_ace_t *ace = NULL;
 	fsal_acl_t *acl = NULL;
@@ -302,7 +301,7 @@ static fsal_status_t fsal_acl_2_panfs_acl(struct attrlist *attrib,
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 fail:
-	nfs4_acl_release_entry(acl, &status);
+	(void)nfs4_acl_release_entry(acl);
 	return fsalstat(ret, 0);
 }
 
@@ -344,8 +343,6 @@ static fsal_status_t panfs_acl_2_fsal_acl(struct pan_fs_acl_s *panacl,
 
 	/* Create fsal acl data. */
 	acldata.aces = (fsal_ace_t *) nfs4_ace_alloc(acldata.naces);
-	if (!acldata.aces)
-		return fsalstat(ERR_FSAL_NOMEM, ENOMEM);
 
 	LogDebug(COMPONENT_FSAL, "Converting %u aces:", acldata.naces);
 	ace = acldata.aces;
@@ -401,14 +398,7 @@ fsal_status_t PanFS_getattrs(struct panfs_fsal_obj_handle *panfs_hdl,
 		/*return st;*/
 	}
 
-	st = panfs_acl_2_fsal_acl(&pattrs.acls, attrib);
-	if (FSAL_IS_ERROR(st)) {
-		FSAL_CLEAR_MASK(attrib->mask);
-		FSAL_SET_MASK(attrib->mask, ATTR_RDATTR_ERR);
-		return st;
-	}
-
-	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+	return panfs_acl_2_fsal_acl(&pattrs.acls, attrib);
 }
 
 /**
@@ -433,11 +423,8 @@ fsal_status_t PanFS_setattrs(struct panfs_fsal_obj_handle *panfs_hdl,
 	pattrs.acls.aces = paces;
 
 	st = fsal_acl_2_panfs_acl(attrib, &pattrs.acls);
-	if (FSAL_IS_ERROR(st)) {
-		FSAL_CLEAR_MASK(attrib->mask);
-		FSAL_SET_MASK(attrib->mask, ATTR_RDATTR_ERR);
+	if (FSAL_IS_ERROR(st))
 		return st;
-	}
 
 	st = panfs_um_set_attr(fd, &pattrs);
 	if (FSAL_IS_ERROR(st))

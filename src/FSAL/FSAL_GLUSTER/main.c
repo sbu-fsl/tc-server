@@ -54,7 +54,7 @@ static struct fsal_staticfsinfo_t default_gluster_info = {
 	.link_support = true,
 	.symlink_support = true,
 	.lock_support = true,
-	.lock_support_owner = false,
+	.lock_support_owner = true,
 	.lock_support_async_block = false,
 	.named_attr = true,
 	.unique_handles = true,
@@ -73,7 +73,7 @@ static struct fsal_staticfsinfo_t default_gluster_info = {
 	.link_supports_permission_checks = true,
 };
 
-static struct glusterfs_fsal_module *glfsal_module;
+static struct glusterfs_fsal_module GlusterFS;
 
 static struct config_item glfs_params[] = {
 	CONF_ITEM_BOOL("pnfs_mds", false,
@@ -120,52 +120,59 @@ static fsal_status_t init_config(struct fsal_module *fsal_hdl,
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
+/**
+ * @brief Indicate support for extended operations.
+ *
+ * @retval true if extended operations are supported.
+ */
+
+bool glusterfs_support_ex(struct fsal_obj_handle *obj)
+{
+	return true;
+}
+
 /* Module methods
  */
 
 MODULE_INIT void glusterfs_init(void)
 {
+	struct fsal_module *myself = &GlusterFS.fsal;
+
 	/* register_fsal seems to expect zeroed memory. */
-	glfsal_module = gsh_calloc(1, sizeof(struct glusterfs_fsal_module));
-	if (glfsal_module == NULL) {
+	memset(myself, 0, sizeof(*myself));
+
+	if (register_fsal(myself, glfsal_name, FSAL_MAJOR_VERSION,
+			  FSAL_MINOR_VERSION, FSAL_ID_GLUSTER) != 0) {
 		LogCrit(COMPONENT_FSAL,
-			"Unable to allocate memory for Gluster FSAL module.");
+			"Gluster FSAL module failed to register.");
 		return;
 	}
 
-	if (register_fsal(&glfsal_module->fsal, glfsal_name, FSAL_MAJOR_VERSION,
-			  FSAL_MINOR_VERSION, FSAL_ID_GLUSTER) != 0) {
-		gsh_free(glfsal_module);
-		LogCrit(COMPONENT_FSAL,
-			"Gluster FSAL module failed to register.");
-	}
-
 	/* set up module operations */
-	glfsal_module->fsal.m_ops.create_export = glusterfs_create_export;
+	myself->m_ops.create_export = glusterfs_create_export;
 
 	/* setup global handle internals */
-	glfsal_module->fsal.m_ops.init_config = init_config;
+	myself->m_ops.init_config = init_config;
 
+	/* Enable extended fop support */
+	myself->m_ops.support_ex = glusterfs_support_ex;
 	/*
 	 * Following inits needed for pNFS support
 	 * get device info will used by pnfs meta data server
 	 */
-	glfsal_module->fsal.m_ops.getdeviceinfo = getdeviceinfo;
-	glfsal_module->fsal.m_ops.fsal_pnfs_ds_ops = pnfs_ds_ops_init;
+	myself->m_ops.getdeviceinfo = getdeviceinfo;
+	myself->m_ops.fsal_pnfs_ds_ops = pnfs_ds_ops_init;
 
 	LogDebug(COMPONENT_FSAL, "FSAL Gluster initialized");
 }
 
 MODULE_FINI void glusterfs_unload(void)
 {
-	if (unregister_fsal(&glfsal_module->fsal) != 0) {
+	if (unregister_fsal(&GlusterFS.fsal) != 0) {
 		LogCrit(COMPONENT_FSAL,
 			"FSAL Gluster unable to unload.  Dying ...");
-		abort();
+		return;
 	}
-
-	gsh_free(glfsal_module);
-	glfsal_module = NULL;
 
 	LogDebug(COMPONENT_FSAL, "FSAL Gluster unloaded");
 }

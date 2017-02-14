@@ -332,6 +332,8 @@ extern "C" {
 #define ACE4_GENERIC_READ 0x00120081
 #define ACE4_GENERIC_WRITE 0x00160106
 #define ACE4_GENERIC_EXECUTE 0x001200A0
+#define ACE4_READ_XATTRS 0x00200000
+#define ACE4_WRITE_XATTRS 0x00400000
 
 	struct nfsace4 {
 		acetype4 type;
@@ -826,9 +828,13 @@ extern "C" {
 #define FATTR4_FS_CHARSET_CAP 76
 
 /* NFSv4.2 */
-#define FATTR4_SPACE_FREED 77
-#define FATTR4_CHANGE_ATTR_TYPE 78
-#define FATTR4_SEC_LABEL 79
+#define FATTR4_CLONE_BLKSIZE 77
+#define FATTR4_SPACE_FREED 78
+#define FATTR4_CHANGE_ATTR_TYPE 79
+#define FATTR4_SEC_LABEL 80
+
+/* NFSv4.3 */
+#define FATTR4_XATTR_SUPPORT 81
 
 	struct fattr4 {
 		struct bitmap4 attrmask;
@@ -1100,6 +1106,8 @@ extern "C" {
 #define ACCESS4_EXTEND 0x00000008
 #define ACCESS4_DELETE 0x00000010
 #define ACCESS4_EXECUTE 0x00000020
+#define ACCESS4_XAREAD  0x00000040
+#define ACCESS4_XAWRITE 0x00000080
 
 	struct ACCESS4args {
 		uint32_t access;
@@ -2829,11 +2837,119 @@ extern "C" {
 		NFS4_OP_READ_PLUS = 68,
 		NFS4_OP_SEEK = 69,
 		NFS4_OP_WRITE_SAME = 70,
-		NFS4_OP_LAST_ONE = 71,
+		NFS4_OP_CLONE = 71,
+
+		/* NFSv4.3 */
+		NFS4_OP_GETXATTR = 72,
+		NFS4_OP_SETXATTR = 73,
+		NFS4_OP_LISTXATTR = 74,
+		NFS4_OP_REMOVEXATTR = 75,
+
+		NFS4_OP_LAST_ONE = 76,
 
 		NFS4_OP_ILLEGAL = 10044,
 	};
 	typedef enum nfs_opnum4 nfs_opnum4;
+
+	typedef component4 xattrname4;
+	typedef component4 xattrvalue4;
+
+	enum setxattr_type4 {
+		SETXATTR4_CREATE = 0,
+		SETXATTR4_REPLACE = 1,
+	};
+	typedef enum setxattr_type4 setxattr_type4;
+
+	struct xattr4 {
+		xattrname4 xa_name;
+		xattrvalue4 xa_value;
+	};
+	typedef struct xattr4 xattr4;
+
+	struct xattrlist4 {
+		count4 entryCount;
+		component4 *entries;
+	};
+	typedef struct xattrlist4 xattrlist4;
+
+
+	struct GETXATTR4args {
+		xattrname4 ga_name;
+	};
+	typedef struct GETXATTR4args GETXATTR4args;
+
+	struct GETXATTR4resok {
+		xattrvalue4 gr_value;
+	};
+	typedef struct GETXATTR4resok GETXATTR4resok;
+
+	struct GETXATTR4res {
+		nfsstat4 status;
+		union {
+			GETXATTR4resok resok4;
+		} GETXATTR4res_u;
+	};
+	typedef struct GETXATTR4res GETXATTR4res;
+
+	struct SETXATTR4args {
+		setxattr_type4 sa_type;
+		xattr4 sa_xattr;
+	};
+	typedef struct SETXATTR4args SETXATTR4args;
+
+	struct SETXATTR4resok {
+		change_info4 sr_info;
+	};
+	typedef struct SETXATTR4resok SETXATTR4resok;
+
+	struct SETXATTR4res {
+		nfsstat4 status;
+		union {
+			SETXATTR4resok resok4;
+		} SETXATTR4res_u;
+	};
+	typedef struct SETXATTR4res SETXATTR4res;
+
+	struct LISTXATTR4args {
+		nfs_cookie4 la_cookie;
+		verifier4 la_cookieverf;
+		count4 la_maxcount;
+	};
+	typedef struct LISTXATTR4args LISTXATTR4args;
+
+	struct LISTXATTR4resok {
+		nfs_cookie4 lr_cookie;
+		verifier4 lr_cookieverf;
+		bool_t lr_eof;
+		xattrlist4 lr_names;
+	};
+	typedef struct LISTXATTR4resok LISTXATTR4resok;
+
+	struct LISTXATTR4res {
+		nfsstat4 status;
+		union {
+			LISTXATTR4resok resok4;
+		} LISTXATTR4res_u;
+	};
+	typedef struct LISTXATTR4res LISTXATTR4res;
+
+	struct REMOVEXATTR4args {
+		xattrname4 ra_name;
+	};
+	typedef struct REMOVEXATTR4args REMOVEXATTR4args;
+
+	struct REMOVEXATTR4resok {
+		change_info4 rr_info;
+	};
+	typedef struct REMOVEXATTR4resok REMOVEXATTR4resok;
+
+	struct REMOVEXATTR4res {
+		nfsstat4 status;
+		union {
+			REMOVEXATTR4resok resok4;
+		} REMOVEXATTR4res_u;
+	};
+	typedef struct REMOVEXATTR4res REMOVEXATTR4res;
 
 	typedef struct {
 		deviceid4       de_deviceid;
@@ -3061,6 +3177,13 @@ extern "C" {
 			IO_ADVISE4args opio_advise;
 			LAYOUTERROR4args oplayouterror;
 			LAYOUTSTATS4args oplayoutstats;
+
+			/* NFSv4.3 */
+			GETXATTR4args opgetxattr;
+			SETXATTR4args opsetxattr;
+			LISTXATTR4args oplistxattr;
+			REMOVEXATTR4args opremovexattr;
+
 		} nfs_argop4_u;
 	};
 	typedef struct nfs_argop4 nfs_argop4;
@@ -3139,6 +3262,12 @@ extern "C" {
 			IO_ADVISE4res opio_advise;
 			LAYOUTERROR4res oplayouterror;
 			LAYOUTSTATS4res oplayoutstats;
+
+			/* NFSv4.3 */
+			GETXATTR4res opgetxattr;
+			SETXATTR4res opsetxattr;
+			LISTXATTR4res oplistxattr;
+			REMOVEXATTR4res opremovexattr;
 
 			ILLEGAL4res opillegal;
 		} nfs_resop4_u;
@@ -3706,23 +3835,10 @@ extern "C" {
 
 	static inline bool xdr_nfs_fh4(XDR * xdrs, nfs_fh4 *objp)
 	{
-		file_handle_v4_t *fh;
-
-		if (xdrs->x_op == XDR_ENCODE &&
-		    objp->nfs_fh4_len >= offsetof(file_handle_v4_t, fsopaque)) {
-			fh = (file_handle_v4_t *)objp->nfs_fh4_val;
-			fh->id.exports = htons(fh->id.exports);
-		}
 		if (!inline_xdr_bytes
-		    (xdrs, (char **)&objp->nfs_fh4_val,
+		    (xdrs, (char **) &objp->nfs_fh4_val,
 		     &objp->nfs_fh4_len, NFS4_FHSIZE))
 			return false;
-
-		if (xdrs->x_op == XDR_DECODE &&
-		    objp->nfs_fh4_len >= offsetof(file_handle_v4_t, fsopaque)) {
-			fh = (file_handle_v4_t *)objp->nfs_fh4_val;
-			fh->id.exports = ntohs(fh->id.exports);
-		}
 		return true;
 	}
 
@@ -5429,6 +5545,128 @@ extern "C" {
 	{
 		if (!xdr_nfsstat4(xdrs, &objp->status))
 			return false;
+		return true;
+	}
+
+	/* NFSv4.2 */
+	static inline bool xdr_GETXATTR4args(XDR * xdrs, GETXATTR4args *objp)
+	{
+		if (!xdr_component4(xdrs, &objp->ga_name))
+			return false;
+		return true;
+	}
+	static inline bool xdr_GETXATTR4res(XDR * xdrs, GETXATTR4res *objp)
+	{
+		if (!xdr_nfsstat4(xdrs, &objp->status))
+			return false;
+		switch (objp->status) {
+		case NFS4_OK:
+			if (!xdr_component4(xdrs,
+					&objp->GETXATTR4res_u.resok4.gr_value))
+				return false;
+			break;
+		default:
+			break;
+		}
+		return true;
+	}
+
+	static inline bool xdr_SETXATTR4args(XDR * xdrs, SETXATTR4args *objp)
+	{
+		if (!inline_xdr_enum(xdrs, (enum_t *) &objp->sa_type))
+			return false;
+		if (!xdr_component4(xdrs, &objp->sa_xattr.xa_name))
+			return false;
+		if (!xdr_component4(xdrs,
+				&objp->sa_xattr.xa_value))
+			return false;
+		return true;
+	}
+	static inline bool xdr_SETXATTR4res(XDR * xdrs, SETXATTR4res *objp)
+	{
+		if (!xdr_nfsstat4(xdrs, &objp->status))
+			return false;
+		switch (objp->status) {
+		case NFS4_OK:
+			if (!xdr_change_info4(xdrs,
+					&objp->SETXATTR4res_u.resok4.sr_info))
+				return false;
+			break;
+		default:
+			break;
+		}
+		return true;
+	}
+	static inline bool xdr_LISTXATTR4args(XDR * xdrs, LISTXATTR4args *objp)
+	{
+		if (!xdr_nfs_cookie4(xdrs, &objp->la_cookie))
+			return false;
+		if (!xdr_verifier4(xdrs, objp->la_cookieverf))
+			return false;
+		if (!xdr_count4(xdrs, &objp->la_maxcount))
+			return false;
+		return true;
+	}
+
+	static inline bool xdr_listxattr4(XDR * xdrs, xattrlist4 *objp)
+	{
+		if (!xdr_array
+		    (xdrs, (char **)&objp->entries,
+		     &objp->entryCount, XDR_ARRAY_MAXLEN, sizeof(component4),
+		     (xdrproc_t) xdr_component4))
+			return false;
+		return true;
+	}
+
+	static inline bool xdr_LISTXATTR4resok(XDR * xdrs,
+						LISTXATTR4resok *objp)
+	{
+		if (!xdr_nfs_cookie4(xdrs, &objp->lr_cookie))
+			return false;
+		if (!xdr_verifier4(xdrs, objp->lr_cookieverf))
+			return false;
+		if (!inline_xdr_bool(xdrs, &objp->lr_eof))
+			return false;
+		if (!xdr_listxattr4(xdrs, &objp->lr_names))
+			return false;
+		return true;
+	}
+	static inline bool xdr_LISTXATTR4res(XDR * xdrs, LISTXATTR4res *objp)
+	{
+		if (!xdr_nfsstat4(xdrs, &objp->status))
+			return false;
+		switch (objp->status) {
+		case NFS4_OK:
+			if (!xdr_LISTXATTR4resok
+			    (xdrs, &objp->LISTXATTR4res_u.resok4))
+				return false;
+			break;
+		default:
+			break;
+		}
+		return true;
+	}
+	static inline bool xdr_REMOVEXATTR4args(XDR * xdrs,
+						REMOVEXATTR4args *objp)
+	{
+		if (!xdr_component4(xdrs, &objp->ra_name))
+			return false;
+		return true;
+	}
+	static inline bool xdr_REMOVEXATTR4res(XDR * xdrs,
+						REMOVEXATTR4res *objp)
+	{
+		if (!xdr_nfsstat4(xdrs, &objp->status))
+			return false;
+		switch (objp->status) {
+		case NFS4_OK:
+			if (!xdr_change_info4(xdrs,
+				&objp->REMOVEXATTR4res_u.resok4.rr_info))
+				return false;
+			break;
+		default:
+			break;
+		}
 		return true;
 	}
 
@@ -7817,8 +8055,7 @@ extern "C" {
 		return true;
 	}
 
-	static inline bool
-	xdr_netloc4(XDR *xdrs, netloc4 *objp)
+	static inline bool xdr_netloc4(XDR *xdrs, netloc4 *objp)
 	{
 		if (!inline_xdr_enum(xdrs, (enum_t *)&objp->nl_type))
 			return false;
@@ -7947,7 +8184,8 @@ extern "C" {
 			return false;
 		if (!xdr_nfsstat4(xdrs, &objp->lea_errors.de_status))
 			return false;
-		if (!inline_xdr_enum(xdrs, (enum_t *)objp->lea_errors.de_opnum))
+		if (!inline_xdr_enum(xdrs,
+				     (enum_t *)&objp->lea_errors.de_opnum))
 			return false;
 		return true;
 	}
@@ -7990,8 +8228,8 @@ extern "C" {
 		return true;
 	}
 
-	static inline bool
-	xdr_write_response4(XDR *xdrs, write_response4 *objp)
+	static inline bool xdr_write_response4(XDR *xdrs,
+					 write_response4 *objp)
 	{
 		if (!xdr_count4(xdrs, &objp->wr_ids))
 			return false;
@@ -8393,6 +8631,29 @@ extern "C" {
 		case NFS4_OP_COPY_NOTIFY:
 		case NFS4_OP_OFFLOAD_CANCEL:
 		case NFS4_OP_OFFLOAD_STATUS:
+		case NFS4_OP_CLONE:
+			break;
+
+		/* NFSv4.3 */
+		case NFS4_OP_GETXATTR:
+			if (!xdr_GETXATTR4args(xdrs,
+					&objp->nfs_argop4_u.opgetxattr))
+				return false;
+			break;
+		case NFS4_OP_SETXATTR:
+			if (!xdr_SETXATTR4args(xdrs,
+					&objp->nfs_argop4_u.opsetxattr))
+				return false;
+			break;
+		case NFS4_OP_LISTXATTR:
+			if (!xdr_LISTXATTR4args(xdrs,
+					&objp->nfs_argop4_u.oplistxattr))
+				return false;
+			break;
+		case NFS4_OP_REMOVEXATTR:
+			if (!xdr_REMOVEXATTR4args(xdrs,
+					&objp->nfs_argop4_u.opremovexattr))
+				return false;
 			break;
 
 		case NFS4_OP_ILLEGAL:
@@ -8724,6 +8985,29 @@ extern "C" {
 		case NFS4_OP_COPY_NOTIFY:
 		case NFS4_OP_OFFLOAD_CANCEL:
 		case NFS4_OP_OFFLOAD_STATUS:
+		case NFS4_OP_CLONE:
+
+		/* NFSv4.3 */
+		case NFS4_OP_GETXATTR:
+			if (!xdr_GETXATTR4res(xdrs,
+					&objp->nfs_resop4_u.opgetxattr))
+				return false;
+			break;
+		case NFS4_OP_SETXATTR:
+			if (!xdr_SETXATTR4res(xdrs,
+					&objp->nfs_resop4_u.opsetxattr))
+				return false;
+			break;
+		case NFS4_OP_LISTXATTR:
+			if (!xdr_LISTXATTR4res(xdrs,
+					&objp->nfs_resop4_u.oplistxattr))
+				return false;
+			break;
+		case NFS4_OP_REMOVEXATTR:
+			if (!xdr_REMOVEXATTR4res(xdrs,
+					&objp->nfs_resop4_u.opremovexattr))
+				return false;
+			break;
 
 		case NFS4_OP_ILLEGAL:
 			if (!xdr_ILLEGAL4res
@@ -9701,433 +9985,6 @@ extern "C" {
 			return false;
 		return true;
 	}
-
-	static inline bool xdr_nfs_ftype4();
-	static inline bool xdr_nfsstat4();
-	static inline bool xdr_attrlist4();
-	static inline bool xdr_bitmap4();
-	static inline bool xdr_changeid4();
-	static inline bool xdr_clientid4();
-	static inline bool xdr_count4();
-	static inline bool xdr_length4();
-	static inline bool xdr_mode4();
-	static inline bool xdr_nfs_cookie4();
-	static inline bool xdr_nfs_fh4();
-	static inline bool xdr_offset4();
-	static inline bool xdr_qop4();
-	static inline bool xdr_sec_oid4();
-	static inline bool xdr_sequenceid4();
-	static inline bool xdr_seqid4();
-	static inline bool xdr_sessionid4();
-	static inline bool xdr_slotid4();
-	static inline bool xdr_utf8string();
-	static inline bool xdr_utf8str_cis();
-	static inline bool xdr_utf8str_cs();
-	static inline bool xdr_utf8str_mixed();
-	static inline bool xdr_component4();
-	static inline bool xdr_linktext4();
-	static inline bool xdr_pathname4();
-	static inline bool xdr_verifier4();
-	static inline bool xdr_nfstime4();
-	static inline bool xdr_time_how4();
-	static inline bool xdr_settime4();
-	static inline bool xdr_nfs_lease4();
-	static inline bool xdr_fsid4();
-	static inline bool xdr_change_policy4();
-	static inline bool xdr_fs_location4();
-	static inline bool xdr_fs_locations4();
-	static inline bool xdr_acetype4();
-	static inline bool xdr_aceflag4();
-	static inline bool xdr_acemask4();
-	static inline bool xdr_nfsace4();
-	static inline bool xdr_aclflag4();
-	static inline bool xdr_nfsacl41();
-	static inline bool xdr_mode_masked4();
-	static inline bool xdr_specdata4();
-	static inline bool xdr_netaddr4();
-	static inline bool xdr_nfs_impl_id4();
-	static inline bool xdr_stateid4();
-	static inline bool xdr_layouttype4();
-	static inline bool xdr_layout_content4();
-	static inline bool xdr_layouthint4();
-	static inline bool xdr_layoutiomode4();
-	static inline bool xdr_layout4();
-	static inline bool xdr_deviceid4();
-	static inline bool xdr_device_addr4();
-	static inline bool xdr_layoutupdate4();
-	static inline bool xdr_layoutreturn_type4();
-	static inline bool xdr_layoutreturn_file4();
-	static inline bool xdr_layoutreturn4();
-	static inline bool xdr_fs4_status_type();
-	static inline bool xdr_fs4_status();
-	static inline bool xdr_threshold4_read_size();
-	static inline bool xdr_threshold4_write_size();
-	static inline bool xdr_threshold4_read_iosize();
-	static inline bool xdr_threshold4_write_iosize();
-	static inline bool xdr_threshold_item4();
-	static inline bool xdr_mdsthreshold4();
-	static inline bool xdr_retention_get4();
-	static inline bool xdr_retention_set4();
-	static inline bool xdr_fs_charset_cap4();
-	static inline bool xdr_fattr4_supported_attrs();
-	static inline bool xdr_fattr4_type();
-	static inline bool xdr_fattr4_fh_expire_type();
-	static inline bool xdr_fattr4_change();
-	static inline bool xdr_fattr4_size();
-	static inline bool xdr_fattr4_link_support();
-	static inline bool xdr_fattr4_symlink_support();
-	static inline bool xdr_fattr4_named_attr();
-	static inline bool xdr_fattr4_fsid();
-	static inline bool xdr_fattr4_unique_handles();
-	static inline bool xdr_fattr4_lease_time();
-	static inline bool xdr_fattr4_rdattr_error();
-	static inline bool xdr_fattr4_acl();
-	static inline bool xdr_fattr4_aclsupport();
-	static inline bool xdr_fattr4_archive();
-	static inline bool xdr_fattr4_cansettime();
-	static inline bool xdr_fattr4_case_insensitive();
-	static inline bool xdr_fattr4_case_preserving();
-	static inline bool xdr_fattr4_chown_restricted();
-	static inline bool xdr_fattr4_fileid();
-	static inline bool xdr_fattr4_files_avail();
-	static inline bool xdr_fattr4_filehandle();
-	static inline bool xdr_fattr4_files_free();
-	static inline bool xdr_fattr4_files_total();
-	static inline bool xdr_fattr4_fs_locations();
-	static inline bool xdr_fattr4_hidden();
-	static inline bool xdr_fattr4_homogeneous();
-	static inline bool xdr_fattr4_maxfilesize();
-	static inline bool xdr_fattr4_maxlink();
-	static inline bool xdr_fattr4_maxname();
-	static inline bool xdr_fattr4_maxread();
-	static inline bool xdr_fattr4_maxwrite();
-	static inline bool xdr_fattr4_mimetype();
-	static inline bool xdr_fattr4_mode();
-	static inline bool xdr_fattr4_mode_set_masked();
-	static inline bool xdr_fattr4_mounted_on_fileid();
-	static inline bool xdr_fattr4_no_trunc();
-	static inline bool xdr_fattr4_numlinks();
-	static inline bool xdr_fattr4_owner();
-	static inline bool xdr_fattr4_owner_group();
-	static inline bool xdr_fattr4_quota_avail_hard();
-	static inline bool xdr_fattr4_quota_avail_soft();
-	static inline bool xdr_fattr4_quota_used();
-	static inline bool xdr_fattr4_rawdev();
-	static inline bool xdr_fattr4_space_avail();
-	static inline bool xdr_fattr4_space_free();
-	static inline bool xdr_fattr4_space_total();
-	static inline bool xdr_fattr4_space_used();
-	static inline bool xdr_fattr4_system();
-	static inline bool xdr_fattr4_time_access();
-	static inline bool xdr_fattr4_time_access_set();
-	static inline bool xdr_fattr4_time_backup();
-	static inline bool xdr_fattr4_time_create();
-	static inline bool xdr_fattr4_time_delta();
-	static inline bool xdr_fattr4_time_metadata();
-	static inline bool xdr_fattr4_time_modify();
-	static inline bool xdr_fattr4_time_modify_set();
-	static inline bool xdr_fattr4_suppattr_exclcreat();
-	static inline bool xdr_fattr4_dir_notif_delay();
-	static inline bool xdr_fattr4_dirent_notif_delay();
-	static inline bool xdr_fattr4_fs_layout_types();
-	static inline bool xdr_fattr4_fs_status();
-	static inline bool xdr_fattr4_fs_charset_cap();
-	static inline bool xdr_fattr4_layout_alignment();
-	static inline bool xdr_fattr4_layout_blksize();
-	static inline bool xdr_fattr4_layout_hint();
-	static inline bool xdr_fattr4_layout_types();
-	static inline bool xdr_fattr4_mdsthreshold();
-	static inline bool xdr_fattr4_retention_get();
-	static inline bool xdr_fattr4_retention_set();
-	static inline bool xdr_fattr4_retentevt_get();
-	static inline bool xdr_fattr4_retentevt_set();
-	static inline bool xdr_fattr4_retention_hold();
-	static inline bool xdr_fattr4_dacl();
-	static inline bool xdr_fattr4_sacl();
-	static inline bool xdr_fattr4_change_policy();
-	static inline bool xdr_fattr4();
-	static inline bool xdr_change_info4();
-	static inline bool xdr_clientaddr4();
-	static inline bool xdr_cb_client4();
-	static inline bool xdr_nfs_client_id4();
-	static inline bool xdr_client_owner4();
-	static inline bool xdr_server_owner4();
-	static inline bool xdr_state_owner4();
-	static inline bool xdr_open_owner4();
-	static inline bool xdr_lock_owner4();
-	static inline bool xdr_nfs_lock_type4();
-	static inline bool xdr_ssv_subkey4();
-	static inline bool xdr_ssv_mic_plain_tkn4();
-	static inline bool xdr_ssv_mic_tkn4();
-	static inline bool xdr_ssv_seal_plain_tkn4();
-	static inline bool xdr_ssv_seal_cipher_tkn4();
-	static inline bool xdr_fs_locations_server4();
-	static inline bool xdr_fs_locations_item4();
-	static inline bool xdr_fs_locations_info4();
-	static inline bool xdr_fattr4_fs_locations_info();
-	static inline bool xdr_nfl_util4();
-	static inline bool xdr_filelayout_hint_care4();
-	static inline bool xdr_nfsv4_1_file_layouthint4();
-	static inline bool xdr_multipath_list4();
-	static inline bool xdr_nfsv4_1_file_layout_ds_addr4();
-	static inline bool xdr_nfsv4_1_file_layout4();
-	static inline bool xdr_device_error4();
-	static inline bool xdr_ff_device_versions4();
-	static inline bool xdr_ff_device_addr4();
-	static inline bool xdr_ff_data_server4();
-	static inline bool xdr_ff_mirror4();
-	static inline bool xdr_ff_layout4();
-	static inline bool xdr_ff_ioerr4();
-	static inline bool xdr_ff_io_latency4();
-	static inline bool xdr_ff_layoutupdate4();
-	static inline bool xdr_io_info4();
-	static inline bool xdr_ff_iostats4();
-	static inline bool xdr_ff_layoutreturn4();
-	static inline bool xdr_ff_mirrors_hint();
-	static inline bool xdr_ff_layouthint4();
-	static inline bool xdr_ff_cb_recall_any_mask();
-	static inline bool xdr_ACCESS4args();
-	static inline bool xdr_ACCESS4resok();
-	static inline bool xdr_ACCESS4res();
-	static inline bool xdr_CLOSE4args();
-	static inline bool xdr_CLOSE4res();
-	static inline bool xdr_COMMIT4args();
-	static inline bool xdr_COMMIT4resok();
-	static inline bool xdr_COMMIT4res();
-	static inline bool xdr_createtype4();
-	static inline bool xdr_CREATE4args();
-	static inline bool xdr_CREATE4resok();
-	static inline bool xdr_CREATE4res();
-	static inline bool xdr_DELEGPURGE4args();
-	static inline bool xdr_DELEGPURGE4res();
-	static inline bool xdr_DELEGRETURN4args();
-	static inline bool xdr_DELEGRETURN4res();
-	static inline bool xdr_GETATTR4args();
-	static inline bool xdr_GETATTR4resok();
-	static inline bool xdr_GETATTR4res();
-	static inline bool xdr_GETFH4resok();
-	static inline bool xdr_GETFH4res();
-	static inline bool xdr_LINK4args();
-	static inline bool xdr_LINK4resok();
-	static inline bool xdr_LINK4res();
-	static inline bool xdr_open_to_lock_owner4();
-	static inline bool xdr_exist_lock_owner4();
-	static inline bool xdr_locker4();
-	static inline bool xdr_LOCK4args();
-	static inline bool xdr_LOCK4denied();
-	static inline bool xdr_LOCK4resok();
-	static inline bool xdr_LOCK4res();
-	static inline bool xdr_LOCKT4args();
-	static inline bool xdr_LOCKT4res();
-	static inline bool xdr_LOCKU4args();
-	static inline bool xdr_LOCKU4res();
-	static inline bool xdr_LOOKUP4args();
-	static inline bool xdr_LOOKUP4res();
-	static inline bool xdr_LOOKUPP4res();
-	static inline bool xdr_NVERIFY4args();
-	static inline bool xdr_NVERIFY4res();
-	static inline bool xdr_createmode4();
-	static inline bool xdr_creatverfattr();
-	static inline bool xdr_createhow4();
-	static inline bool xdr_opentype4();
-	static inline bool xdr_openflag4();
-	static inline bool xdr_limit_by4();
-	static inline bool xdr_nfs_modified_limit4();
-	static inline bool xdr_nfs_space_limit4();
-	static inline bool xdr_open_delegation_type4();
-	static inline bool xdr_open_claim_type4();
-	static inline bool xdr_open_claim_delegate_cur4();
-	static inline bool xdr_open_claim4();
-	static inline bool xdr_OPEN4args();
-	static inline bool xdr_open_read_delegation4();
-	static inline bool xdr_open_write_delegation4();
-	static inline bool xdr_why_no_delegation4();
-	static inline bool xdr_open_none_delegation4();
-	static inline bool xdr_open_delegation4();
-	static inline bool xdr_OPEN4resok();
-	static inline bool xdr_OPEN4res();
-	static inline bool xdr_OPENATTR4args();
-	static inline bool xdr_OPENATTR4res();
-	static inline bool xdr_OPEN_CONFIRM4args();
-	static inline bool xdr_OPEN_CONFIRM4resok();
-	static inline bool xdr_OPEN_CONFIRM4res();
-	static inline bool xdr_OPEN_DOWNGRADE4args();
-	static inline bool xdr_OPEN_DOWNGRADE4resok();
-	static inline bool xdr_OPEN_DOWNGRADE4res();
-	static inline bool xdr_PUTFH4args();
-	static inline bool xdr_PUTFH4res();
-	static inline bool xdr_PUTPUBFH4res();
-	static inline bool xdr_PUTROOTFH4res();
-	static inline bool xdr_READ4args();
-	static inline bool xdr_READ4resok();
-	static inline bool xdr_READ4res();
-	static inline bool xdr_READDIR4args();
-	static inline bool xdr_entry4();
-	static inline bool xdr_dirlist4();
-	static inline bool xdr_READDIR4resok();
-	static inline bool xdr_READDIR4res();
-	static inline bool xdr_READLINK4resok();
-	static inline bool xdr_READLINK4res();
-	static inline bool xdr_REMOVE4args();
-	static inline bool xdr_REMOVE4resok();
-	static inline bool xdr_REMOVE4res();
-	static inline bool xdr_RENAME4args();
-	static inline bool xdr_RENAME4resok();
-	static inline bool xdr_RENAME4res();
-	static inline bool xdr_RENEW4args();
-	static inline bool xdr_RENEW4res();
-	static inline bool xdr_RESTOREFH4res();
-	static inline bool xdr_SAVEFH4res();
-	static inline bool xdr_SECINFO4args();
-	static inline bool xdr_rpc_gss_svc_t();
-	static inline bool xdr_rpcsec_gss_info();
-	static inline bool xdr_secinfo4();
-	static inline bool xdr_SECINFO4resok();
-	static inline bool xdr_SECINFO4res();
-	static inline bool xdr_SETATTR4args();
-	static inline bool xdr_SETATTR4res();
-	static inline bool xdr_SETCLIENTID4args();
-	static inline bool xdr_SETCLIENTID4resok();
-	static inline bool xdr_SETCLIENTID4res();
-	static inline bool xdr_SETCLIENTID_CONFIRM4args();
-	static inline bool xdr_SETCLIENTID_CONFIRM4res();
-	static inline bool xdr_VERIFY4args();
-	static inline bool xdr_VERIFY4res();
-	static inline bool xdr_stable_how4();
-	static inline bool xdr_WRITE4args();
-	static inline bool xdr_WRITE4resok();
-	static inline bool xdr_WRITE4res();
-	static inline bool xdr_RELEASE_LOCKOWNER4args();
-	static inline bool xdr_RELEASE_LOCKOWNER4res();
-	static inline bool xdr_ILLEGAL4res();
-	static inline bool xdr_gsshandle4_t();
-	static inline bool xdr_gss_cb_handles4();
-	static inline bool xdr_callback_sec_parms4();
-	static inline bool xdr_BACKCHANNEL_CTL4args();
-	static inline bool xdr_BACKCHANNEL_CTL4res();
-	static inline bool xdr_channel_dir_from_client4();
-	static inline bool xdr_BIND_CONN_TO_SESSION4args();
-	static inline bool xdr_channel_dir_from_server4();
-	static inline bool xdr_BIND_CONN_TO_SESSION4resok();
-	static inline bool xdr_BIND_CONN_TO_SESSION4res();
-	static inline bool xdr_state_protect_ops4();
-	static inline bool xdr_ssv_sp_parms4();
-	static inline bool xdr_state_protect_how4();
-	static inline bool xdr_state_protect4_a();
-	static inline bool xdr_EXCHANGE_ID4args();
-	static inline bool xdr_ssv_prot_info4();
-	static inline bool xdr_state_protect4_r();
-	static inline bool xdr_EXCHANGE_ID4resok();
-	static inline bool xdr_EXCHANGE_ID4res();
-	static inline bool xdr_channel_attrs4();
-	static inline bool xdr_CREATE_SESSION4args();
-	static inline bool xdr_CREATE_SESSION4resok();
-	static inline bool xdr_CREATE_SESSION4res();
-	static inline bool xdr_DESTROY_SESSION4args();
-	static inline bool xdr_DESTROY_SESSION4res();
-	static inline bool xdr_FREE_STATEID4args();
-	static inline bool xdr_FREE_STATEID4res();
-	static inline bool xdr_attr_notice4();
-	static inline bool xdr_GET_DIR_DELEGATION4args();
-	static inline bool xdr_GET_DIR_DELEGATION4resok();
-	static inline bool xdr_gddrnf4_status();
-	static inline bool xdr_GET_DIR_DELEGATION4res_non_fatal();
-	static inline bool xdr_GET_DIR_DELEGATION4res();
-	static inline bool xdr_GETDEVICEINFO4args();
-	static inline bool xdr_GETDEVICEINFO4resok();
-	static inline bool xdr_GETDEVICEINFO4res();
-	static inline bool xdr_GETDEVICELIST4args();
-	static inline bool xdr_GETDEVICELIST4resok();
-	static inline bool xdr_GETDEVICELIST4res();
-	static inline bool xdr_newtime4();
-	static inline bool xdr_newoffset4();
-	static inline bool xdr_LAYOUTCOMMIT4args();
-	static inline bool xdr_newsize4();
-	static inline bool xdr_LAYOUTCOMMIT4resok();
-	static inline bool xdr_LAYOUTCOMMIT4res();
-	static inline bool xdr_LAYOUTGET4args();
-	static inline bool xdr_LAYOUTGET4resok();
-	static inline bool xdr_LAYOUTGET4res();
-	static inline bool xdr_LAYOUTRETURN4args();
-	static inline bool xdr_layoutreturn_stateid();
-	static inline bool xdr_LAYOUTRETURN4res();
-	static inline bool xdr_secinfo_style4();
-	static inline bool xdr_SECINFO_NO_NAME4args();
-	static inline bool xdr_SECINFO_NO_NAME4res();
-	static inline bool xdr_SEQUENCE4args();
-	static inline bool xdr_SEQUENCE4resok();
-	static inline bool xdr_SEQUENCE4res();
-	static inline bool xdr_ssa_digest_input4();
-	static inline bool xdr_SET_SSV4args();
-	static inline bool xdr_ssr_digest_input4();
-	static inline bool xdr_SET_SSV4resok();
-	static inline bool xdr_SET_SSV4res();
-	static inline bool xdr_TEST_STATEID4args();
-	static inline bool xdr_TEST_STATEID4resok();
-	static inline bool xdr_TEST_STATEID4res();
-	static inline bool xdr_deleg_claim4();
-	static inline bool xdr_WANT_DELEGATION4args();
-	static inline bool xdr_WANT_DELEGATION4res();
-	static inline bool xdr_DESTROY_CLIENTID4args();
-	static inline bool xdr_DESTROY_CLIENTID4res();
-	static inline bool xdr_RECLAIM_COMPLETE4args();
-	static inline bool xdr_RECLAIM_COMPLETE4res();
-	static inline bool xdr_nfs_opnum4();
-	static inline bool xdr_nfs_argop4();
-	static inline bool xdr_nfs_resop4();
-	static inline bool xdr_COMPOUND4args();
-	static inline bool xdr_COMPOUND4res();
-	static inline bool xdr_CB_GETATTR4args();
-	static inline bool xdr_CB_GETATTR4resok();
-	static inline bool xdr_CB_GETATTR4res();
-	static inline bool xdr_CB_RECALL4args();
-	static inline bool xdr_CB_RECALL4res();
-	static inline bool xdr_CB_ILLEGAL4res();
-	static inline bool xdr_layoutrecall_type4();
-	static inline bool xdr_layoutrecall_file4();
-	static inline bool xdr_layoutrecall4();
-	static inline bool xdr_CB_LAYOUTRECALL4args();
-	static inline bool xdr_CB_LAYOUTRECALL4res();
-	static inline bool xdr_notify_type4();
-	static inline bool xdr_notify_entry4();
-	static inline bool xdr_prev_entry4();
-	static inline bool xdr_notify_remove4();
-	static inline bool xdr_notify_add4();
-	static inline bool xdr_notify_attr4();
-	static inline bool xdr_notify_rename4();
-	static inline bool xdr_notify_verifier4();
-	static inline bool xdr_notifylist4();
-	static inline bool xdr_notify4();
-	static inline bool xdr_CB_NOTIFY4args();
-	static inline bool xdr_CB_NOTIFY4res();
-	static inline bool xdr_CB_PUSH_DELEG4args();
-	static inline bool xdr_CB_PUSH_DELEG4res();
-	static inline bool xdr_CB_RECALL_ANY4args();
-	static inline bool xdr_CB_RECALL_ANY4res();
-	static inline bool xdr_CB_RECALLABLE_OBJ_AVAIL4args();
-	static inline bool xdr_CB_RECALLABLE_OBJ_AVAIL4res();
-	static inline bool xdr_CB_RECALL_SLOT4args();
-	static inline bool xdr_CB_RECALL_SLOT4res();
-	static inline bool xdr_referring_call4();
-	static inline bool xdr_referring_call_list4();
-	static inline bool xdr_CB_SEQUENCE4args();
-	static inline bool xdr_CB_SEQUENCE4resok();
-	static inline bool xdr_CB_SEQUENCE4res();
-	static inline bool xdr_CB_WANTS_CANCELLED4args();
-	static inline bool xdr_CB_WANTS_CANCELLED4res();
-	static inline bool xdr_CB_NOTIFY_LOCK4args();
-	static inline bool xdr_CB_NOTIFY_LOCK4res();
-	static inline bool xdr_notify_deviceid_type4();
-	static inline bool xdr_notify_deviceid_delete4();
-	static inline bool xdr_notify_deviceid_change4();
-	static inline bool xdr_CB_NOTIFY_DEVICEID4args();
-	static inline bool xdr_CB_NOTIFY_DEVICEID4res();
-	static inline bool xdr_nfs_cb_opnum4();
-	static inline bool xdr_nfs_cb_argop4();
-	static inline bool xdr_nfs_cb_resop4();
-	static inline bool xdr_CB_COMPOUND4args();
-	static inline bool xdr_CB_COMPOUND4res();
-
 #endif				/* K&R C */
 
 #ifdef __cplusplus

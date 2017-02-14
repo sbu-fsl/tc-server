@@ -117,11 +117,7 @@ extern pool_t *nfs_res_pool;
 
 static inline nfs_res_t *alloc_nfs_res(void)
 {
-	/* XXX can pool/ctor zero mem? */
-	nfs_res_t *res = pool_alloc(nfs_res_pool, NULL);
-
-	memset(res, 0, sizeof(nfs_res_t));
-	return res;
+	return pool_alloc(nfs_res_pool);
 }
 
 static inline void free_nfs_res(nfs_res_t *res)

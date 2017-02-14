@@ -89,8 +89,9 @@ int display_vfs_handle(struct display_buffer *dspbuf,
 		       sizeof(u64[0]));
 		handle_cursor += sizeof(u64[0]);
 		b_left = display_printf(dspbuf,
-					"fsid=0x%016"PRIx64".0x%016"PRIx64,
-					u64[0], (uint64_t) 0);
+					"fsid=0x%016"PRIx64
+					".0x0000000000000000",
+					u64[0]);
 		break;
 
 	case FSID_TWO_UINT64:
@@ -426,7 +427,7 @@ bool vfs_valid_handle(struct gsh_buffdesc *desc)
 	if (!fsid_type_ok) {
 		LogDebug(COMPONENT_FSAL,
 			 "FSID Type %02hhx invalid",
-			 handle0 & HANDLE_FSID_MASK);
+			 (uint8_t) (handle0 & HANDLE_FSID_MASK));
 		return false;
 	}
 
@@ -457,7 +458,7 @@ bool vfs_valid_handle(struct gsh_buffdesc *desc)
 	default:
 		LogDebug(COMPONENT_FSAL,
 			 "Handle Type %02hhx invalid",
-			 handle0 & HANDLE_TYPE_MASK);
+			 (uint8_t) (handle0 & HANDLE_TYPE_MASK));
 		return false;
 	}
 

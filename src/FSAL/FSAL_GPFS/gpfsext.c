@@ -1,4 +1,7 @@
-/*-------------------------------------------------------------------------
+/**------------------------------------------------------------------------
+ * @file gpfsext.c
+ * @brief Use ioctl to call into the GPFS kernel module.
+ *
  * NAME:        gpfs_ganesha()
  *
  * FUNCTION:    Use ioctl to call into the GPFS kernel module.
@@ -14,7 +17,6 @@
  *-------------------------------------------------------------------------*/
 
 #include "config.h"
-
 #include <sys/errno.h>
 #include <sys/fcntl.h>
 #include <sys/ioctl.h>
@@ -27,6 +29,7 @@
 #include <sys/stat.h>
 #include "include/gpfs.h"
 #endif
+#include "fsal.h"
 
 #include "include/gpfs_nfs.h"
 
@@ -129,6 +132,12 @@ static void valgrind_kganesha(struct kxArgs *args)
 }
 #endif
 
+/**
+ *  @param op Operation
+ *  @param *oarg Arguments
+ *
+ *  @return Result
+*/
 int gpfs_ganesha(int op, void *oarg)
 {
 	int rc;
@@ -137,11 +146,10 @@ int gpfs_ganesha(int op, void *oarg)
 
 	if (gpfs_fd < 0) {
 		gpfs_fd = open(GPFS_DEVNAMEX, O_RDONLY);
-		if (gpfs_fd < 0) {
-			fprintf(stderr,
-				"Ganesha call to GPFS failed with ENOSYS\n");
-			return ENOSYS;
-		}
+		if (gpfs_fd < 0)
+			LogFatal(COMPONENT_FSAL,
+				"open of %s failed with errno %d",
+				GPFS_DEVNAMEX, errno);
 		(void)fcntl(gpfs_fd, F_SETFD, FD_CLOEXEC);
 	}
 

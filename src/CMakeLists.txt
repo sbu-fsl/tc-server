@@ -14,10 +14,16 @@ endif( "${CMAKE_MAJOR_VERSION}.${CMAKE_MINOR_VERSION}" VERSION_GREATER "2.6" )
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/modules/")
 
-project(nfs-ganesha C)
+project(nfs-ganesha C CXX)
 # Project versioning
 set(GANESHA_MAJOR_VERSION 2)
-set(GANESHA_MINOR_VERSION 3)
+set(GANESHA_MINOR_VERSION 4)
+
+IF(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+set(GANESHA_BUILD_RELEASE 1)
+ELSE()
+set(GANESHA_BUILD_RELEASE 0)
+ENDIF(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
 
 # needs to come after project()
 IF(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT OR CMAKE_INSTALL_PREFIX STREQUAL "/usr")
@@ -33,7 +39,7 @@ ENDIF(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT OR CMAKE_INSTALL_PREFIX STREQU
 # Patch level is always ".0" for mainline (master).  It is blank for development.
 # When starting a stable maintenance branch, this becomes ".N"
 # where N is monotonically increasing starting at 1. Remember to include the "." !!
-set(GANESHA_PATCH_LEVEL .3)
+set(GANESHA_PATCH_LEVEL .1)
 
 # Extra version is for naming development/RC.  It is blank in master/stable branches
 # so it can be available to end-users to name local variants/versions
@@ -153,7 +159,7 @@ endif(FREEBSD)
 
 if (LINUX)
     set(PLATFORM "LINUX")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D_LARGEFILE64_SOURCE")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64")
     set(OS_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/include/os/linux")
     find_library(LIBDL dl)  # module loader
 endif(LINUX)
@@ -186,22 +192,12 @@ option(USE_FSAL_VFS "build VFS FSAL shared library" ON)
 option(USE_FSAL_CEPH "build CEPH FSAL shared library" ON)
 option(USE_FSAL_GPFS "build GPFS FSAL" ON)
 option(USE_FSAL_ZFS "build ZFS FSAL" ON)
-option(USE_FSAL_LUSTRE "build LUSTRE FSAL" ON)
 option(USE_FSAL_XFS "build XFS support in VFS FSAL" ON)
-option(USE_FSAL_PANFS "build PanFS support in VFS FSAL" ON)
+option(USE_FSAL_PANFS "build PanFS support in VFS FSAL" OFF)
 option(USE_FSAL_GLUSTER "build GLUSTER FSAL shared library" ON)
 option(USE_FSAL_NULL "build NULL FSAL shared library" ON)
 option(USE_FSAL_RGW "build RGW FSAL shared library" OFF)
-
-# FSALs which are disabled by default
-option(USE_FSAL_PT "build PT FSAL" OFF)
-option(USE_FSAL_HPSS "build HPSS FSAL" OFF)
-
-# SHOOK is a variant of Lustre FSAL
-option(USE_FSAL_SHOOK "build SHOOK FSAL" ON)
-
-# Activate FSAL Upcalls for FSAL_LUSTRE
-option(USE_FSAL_LUSTRE_UP "add Upcalls support for LUSTRE FSAL" OFF)
+option(USE_TOOL_MULTILOCK "build multilock tool" OFF)
 
 # nTIRPC
 option(USE_SYSTEM_NTIRPC "Use the system nTIRPC, rather than the submodule" OFF)
@@ -223,8 +219,8 @@ option(ENABLE_RFC_ACL "Use all RFC ACL checks" OFF)
 option(USE_EFENCE "link with efence memory debug library" OFF)
 
 # These are -D_FOO options, why ???  should be flags??
-option(_NO_TCP_REGISTER "disable registration of tcp services on portmapper" ON)
-option(_NO_PORTMAPPER "disable registration on portmapper" ON)
+option(_NO_TCP_REGISTER "disable registration of tcp services on portmapper" OFF)
+option(_NO_PORTMAPPER "disable registration on portmapper" OFF)
 option(_NO_XATTRD "disable ghost xattr directory and files support" ON)
 option(DEBUG_SAL "enable debugging of SAL by keeping list of all locks, stateids, and state owners" OFF)
 option(_VALGRIND_MEMCHECK "Initialize buffers passed to GPFS ioctl that valgrind doesn't understand" OFF)
@@ -276,12 +272,37 @@ if(USE_BLKIN)
   set(SYSTEM_LIBRARIES ${LTTNG}  ${SYSTEM_LIBRARIES})
 endif(USE_BLKIN)
 
+# GTest
+option(USE_GTEST "Use Google Test test framework" OFF)
+option(GTEST_PREFIX "Google Test installation prefix"
+  "/opt/gmock/gtest")
+if(USE_GTEST)
+  if (NOT GTEST_PREFIX)
+    set(GTEST_PREFIX "/opt/gmock/gtest")
+  endif(NOT GTEST_PREFIX)
+  set(GTEST_PREFIX ${GTEST_PREFIX} CACHE PATH "Google Test path")
+  find_library(GTEST NAMES gtest PATHS "${GTEST_PREFIX}")
+  find_library(GTEST_MAIN NAMES gtest_main PATHS "${GTEST_PREFIX}")
+endif(USE_GTEST)
+
 # NFS RDMA
 option(USE_NFS_RDMA "enable NFS/RDMA support" OFF)
 
 # Enable 9P Support
 option(USE_9P "enable 9P support" ON)
 option(USE_9P_RDMA "enable 9P_RDMA support" OFF)
+
+# Enable NFSv3 Support
+option(USE_NFS3 "enable NFSv3 support" ON)
+
+# Enable NLM Support
+option(USE_NLM "enable NLM support" ON)
+
+# AF_VSOCK host support (NFS)
+option(USE_VSOCK "enable AF_VSOCK listener" OFF)
+if(USE_VSOCK)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DRPC_VSOCK")
+endif(USE_VSOCK)
 
 # This option will stop cmake compilation if a requested FSAL could not be built
 option(STRICT_PACKAGE "Enable strict packaging behavior" OFF )
@@ -338,41 +359,6 @@ IF(USE_FSAL_GLUSTER)
     set(GLUSTER_PREFIX "/usr" CACHE PATH "Path to Gluster installation")
   ENDIF()
 ENDIF()
-
-IF(USE_FSAL_LUSTRE)
-  IF(LUSTRE_PREFIX)
-    set(LUSTRE_PREFIX ${LUSTRE_PREFIX} CACHE PATH "Path to Lustre installation")
-    LIST(APPEND CMAKE_PREFIX_PATH "${LUSTRE_PREFIX}")
-    if( CMAKE_SIZEOF_VOID_P EQUAL 8 )
-        LIST(APPEND CMAKE_LIBRARY_PATH "${LUSTRE_PREFIX}/lib64")
-    else( CMAKE_SIZEOF_VOID_P EQUAL 8 )
-        LIST(APPEND CMAKE_LIBRARY_PATH "${LUSTRE_PREFIX}/lib")
-    endif( CMAKE_SIZEOF_VOID_P EQUAL 8 )
-    LIST(APPEND CMAKE_REQUIRED_INCLUDES "${LUSTRE_PREFIX}/include")
-  ELSE()
-    set(LUSTRE_PREFIX "/usr" CACHE PATH "Path to Lustre installation")
-  ENDIF()
-ENDIF()
-
-IF(USE_FSAL_HPSS)
-  IF(HPSS_PREFIX)
-    set(HPSS_PREFIX ${HPSS_PREFIX} CACHE PATH "Path to HPSS installation")
-  ELSE()
-    set(HPSS_PREFIX "/opt/hpss" CACHE PATH "Path to HPSS installation")
-  ENDIF()
-
-  # If you are not using hpss with krb5, remove the hpsskrb5auth here.
-  # It shouldn't be needed, but dlopen() of a dlopen() seems not to work as well as one properly linked...
-  find_library(HPSS_LIBRARIES
-    NAMES hpss PATHS "${HPSS_PREFIX}/lib")
-  find_library(HPSSKRB5_LIBRARY
-    NAMES hpsskrb5auth PATHS "${HPSS_PREFIX}/lib")
-  LIST(APPEND HPSS_LIBRARIES "${HPSSKRB5_LIBRARY}")
-  if(NOT HPSS_LIBRARIES)
-    message(WARNING "Cannot find HPSS libraries. Disabling HPSS fsal build")
-    set(USE_FSAL_HPSS OFF)
-  endif(NOT HPSS_LIBRARIES)
-endif(USE_FSAL_HPSS)
 
 IF(USE_FSAL_ZFS)
   IF(ZFS_PREFIX)
@@ -491,13 +477,23 @@ endif( "${CMAKE_MAJOR_VERSION}.${CMAKE_MINOR_VERSION}" VERSION_GREATER "2.6" )
 
 find_package(Krb5 REQUIRED gssapi)
 check_include_files(gssapi.h HAVE_GSSAPI_H)
+if (NOT HAVE_GSSAPI_H)
+  # Debian/Ubuntu 12 magic
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -I/usr/include/mit-krb5/")
+  check_include_files(gssapi.h HAVE_GSSAPI_H)
+endif(NOT HAVE_GSSAPI_H)
 
 if(KRB5_FOUND AND HAVE_GSSAPI_H)
   set(HAVE_KRB5 ON)
   set(KRB5_VERSION 194)  # hand code until we do krb5-config --version magic
   set(_HAVE_GSSAPI ON)
 else(KRB5_FOUND AND HAVE_GSSAPI_H)
-  message(FATAL_ERROR "Cannot find kerberos or GSS libraries")
+  if (NOT KRB5_FOUND)
+    message(FATAL_ERROR "Cannot find kerberos libraries")
+  endif(NOT KRB5_FOUND)
+  if (NOT HAVE_GSSAPI_H)
+    message(FATAL_ERROR "Cannot find GSS libraries")
+  endif (NOT HAVE_GSSAPI_H)
 endif(KRB5_FOUND AND HAVE_GSSAPI_H)
 
 if (USE_ADMIN_TOOLS)
@@ -521,7 +517,7 @@ if(USE_FSAL_GLUSTER)
   IF(GLUSTER_PREFIX)
     set(ENV{PKG_CONFIG_PATH} "${PKG_CONFIG_PATH}:${GLUSTER_PREFIX}/lib/pkgconfig")
   ENDIF(GLUSTER_PREFIX)
-  pkg_check_modules(GFAPI glusterfs-api>=7.3.7)
+  pkg_check_modules(GFAPI glusterfs-api>=7.3.8.6)
   if(NOT GFAPI_FOUND)
     if(STRICT_PACKAGE)
       message(FATAL_ERROR "STRICT PACKAGE: Cannot find GLUSTER GFAPI runtime. Disabling GLUSTER fsal build")
@@ -557,13 +553,6 @@ if(USE_FSAL_GLUSTER)
 	message(STATUS "Could not find libacl, disabling GLUSTER fsal build")
     endif(HAVE_ACL_H)
   endif(USE_FSAL_GLUSTER)
-  pkg_check_modules(GLFS_H_LOOKUPAT_WITH_FOLLOW glusterfs-api>=7.3.7.4)
-  if(NOT GLFS_H_LOOKUPAT_WITH_FOLLOW_FOUND)
-	set(USE_GLUSTER_SYMLINK_MOUNT OFF)
-	message(WARNING "Disabling symlink mount for FSAL GLUSTER")
-  else()
-	set(USE_GLUSTER_SYMLINK_MOUNT ON)
-  endif(NOT GLFS_H_LOOKUPAT_WITH_FOLLOW_FOUND)
 endif(USE_FSAL_GLUSTER)
 
 if(USE_FSAL_CEPH)
@@ -579,96 +568,28 @@ if(USE_FSAL_CEPH)
 endif(USE_FSAL_CEPH)
 
 if(USE_FSAL_RGW)
-  find_package(RGW)
+  # require RGW w/API version 1.1.x
+  find_package(RGW 1.1)
   if(NOT RGW_FOUND)
     if(STRICT_PACKAGE)
       message(FATAL_ERROR "STRICT_PACKAGE : Cannot find RGW runtime.  Disabling RGW fsal build")
     else(STRICT_PACKAGE)
-      message(WARNING "Cannot find RGW runtime.  Disabling RGW fsal build")
+      message(WARNING
+	"Cannot find supported RGW runtime.  Disabling RGW fsal build")
       set(USE_FSAL_RGW OFF)
     endif(STRICT_PACKAGE)
   endif(NOT RGW_FOUND)
 endif(USE_FSAL_RGW)
 
-if(USE_FSAL_LUSTRE)
-  find_library(HAVE_LUSTREAPI lustreapi)
-  check_library_exists(
-    lustreapi
-    llapi_is_lustre_mnt
-    ""
-    HAVE_LUSTREAPI
-    )
-  check_include_files("unistd.h;lustre/lustre_user.h" HAVE_LUSTRE_USER_H)
-  if((NOT HAVE_LUSTREAPI) OR (NOT HAVE_LUSTRE_USER_H))
-   if(STRICT_PACKAGE)
-      message(FATAL_ERROR "STRICT_PACKAGE: Cannot find LUSTRE runtime. Disabling LUSTRE fsal build")
-    else(STRICT_PACKAGE)
-      message(WARNING "Cannot find LUSTRE runtime. Disabling LUSTRE fsal build")
-      set(USE_FSAL_LUSTRE OFF)
-      set(USE_FSAL_SHOOK OFF)
-    endif(STRICT_PACKAGE)
-  else((NOT HAVE_LUSTREAPI) OR (NOT HAVE_LUSTRE_USER_H))
-    include_directories("${LUSTRE_PREFIX}/include")
-    if( CMAKE_SIZEOF_VOID_P EQUAL 8 )
-        link_directories("${LUSTRE_PREFIX}/lib64")
-    else( CMAKE_SIZEOF_VOID_P EQUAL 8 )
-        link_directories("${LUSTRE_PREFIX}/lib")
-    endif( CMAKE_SIZEOF_VOID_P EQUAL 8 )
-  endif((NOT HAVE_LUSTREAPI) OR (NOT HAVE_LUSTRE_USER_H))
-
-  check_include_files("lustre/lustreapi.h" HAVE_INCLUDE_LUSTREAPI_H)
-  check_include_files("lustre/liblustreapi.h" HAVE_INCLUDE_LIBLUSTREAPI_H)
-
-  if( ( NOT HAVE_INCLUDE_LUSTREAPI_H ) AND ( NOT HAVE_INCLUDE_LIBLUSTREAPI_H ) )
-    message( ERROR "Cannot find lustre header files, aborting" )
-  endif( ( NOT HAVE_INCLUDE_LUSTREAPI_H ) AND ( NOT HAVE_INCLUDE_LIBLUSTREAPI_H ) )
-else(USE_FSAL_LUSTRE)
-  message(WARNING "Disabling SHOOK because it needs LUSTRE")
-  set(USE_FSAL_SHOOK OFF)
-endif(USE_FSAL_LUSTRE)
-
-if(USE_FSAL_LUSTRE AND USE_FSAL_SHOOK)
-  find_library(HAVE_SHOOK shooksvr)
-  check_library_exists(
-    shooksvr
-    shook_restore
-    ""
-    HAVE_SHOOK
-    )
-  check_include_files("unistd.h;attr/xattr.h" HAVE_SHOOK_XATTRS)
-  if((NOT HAVE_SHOOK) OR (NOT HAVE_SHOOK_XATTRS))
-   if(STRICT_PACKAGE)
-      message(FATAL_ERROR "STRICT_PACKAGE: Cannot find SHOOK runtime. Disabling SHOOK build")
-    else(STRICT_PACKAGE)
-      message(WARNING "Cannot find SHOOK runtime. Disabling SHOOK build")
-      set(USE_FSAL_SHOOK OFF)
-    endif(STRICT_PACKAGE)
-  endif((NOT HAVE_SHOOK) OR (NOT HAVE_SHOOK_XATTRS))
-  if(USE_FSAL_SHOOK AND HAVE_INCLUDE_LUSTREAPI_H)
-    # shook uses a different define than us for this flag
-    set(_LUSTRE_API_HEADER 1)
-  endif(USE_FSAL_SHOOK AND HAVE_INCLUDE_LUSTREAPI_H)
-endif(USE_FSAL_LUSTRE AND USE_FSAL_SHOOK)
-
-IF(USE_FSAL_LUSTRE_UP)
-  find_library(HAVE_LCAP lcap)
-  check_include_files("lcap_client.h" HAVE_LCAP_CLIENT_H)
-  IF(NOT HAVE_LCAP OR NOT HAVE_LCAP_CLIENT_H)
-    message(WARNING "liblcap is to be installed to use Lustre upcalls")
-    set(USE_FSAL_LUSTRE_UP OFF)
-  ENDIF(NOT HAVE_LCAP OR NOT HAVE_LCAP_CLIENT_H)
-  IF(NOT HAVE_FSAL_LUSTRE)
-    message(WARNING "You must trigger Lustre FSAL ON to use Lustre upcalls")
-  ENDIF(NOT HAVE_FSAL_LUSTRE)
-ENDIF(USE_FSAL_LUSTRE_UP)
-
 if(USE_FSAL_XFS)
-  check_library_exists(
-    handle
-    "open_by_handle"
-    ""
-    HAVE_XFS_LIB
-    )
+  if(EXISTS /lib/libhandle.so)
+    check_library_exists(handle "open_by_handle" "/./lib" HAVE_XFS_LIB)
+    if(HAVE_XFS_LIB)
+      set(PATH_LIBHANDLE "/lib/libhandle.so" CACHE INTERNAL "debian stretch and ubuntu xenial hack")
+    endif(HAVE_XFS_LIB)
+  else(EXISTS /lib/libhandle.so)
+    check_library_exists(handle "open_by_handle" "" HAVE_XFS_LIB)
+  endif(EXISTS /lib/libhandle.so)
   check_include_files("xfs/xfs.h" HAVE_XFS_H)
   if((NOT HAVE_XFS_LIB) OR (NOT HAVE_XFS_H))
    if(STRICT_PACKAGE)
@@ -794,6 +715,8 @@ include_directories(
 # Fixup loose bits of autotools legacy
 set(_USE_9P ${USE_9P})
 set(_USE_9P_RDMA ${USE_9P_RDMA})
+set(_USE_NFS3 ${USE_NFS3})
+set(_USE_NLM ${USE_NLM})
 
 if(USE_CB_SIMULATOR)
   set(_USE_CB_SIMULATOR ON)
@@ -873,9 +796,12 @@ check_library_exists(
 #Protocols we support
 set(PROTOCOLS
   nfsproto
-  nlm
   rquota
 )
+
+if(USE_NLM)
+  set(PROTOCOLS ${PROTOCOLS} nlm)
+endif(USE_NLM)
 
 if(USE_9P)
   set(PROTOCOLS ${PROTOCOLS} 9p)
@@ -889,7 +815,6 @@ set(PROTOCOLS
 # Core subsystems
 set(GANESHA_CORE
   sal
-  cache_inode
   idmap
   avltree
   hashtable
@@ -901,8 +826,14 @@ set(GANESHA_CORE
   hash
   log
   uid2grp
+  netgroup_cache
   fsalpseudo
+  fsalmdcache
   )
+
+if(USE_CACHE_INODE)
+  set(GANESHA_CORE ${GANESHA_CORE} cache_inode)
+endif(USE_CACHE_INODE)
 
 if(USE_DBUS)
   set(GANESHA_CORE ${GANESHA_CORE} gshdbus)
@@ -930,7 +861,7 @@ if(USE_9P_RDMA)
   link_directories (${MOOSHIKA_LIBRARY_DIRS})
 endif(USE_9P_RDMA)
 
-set(NTIRPC_VERSION 1.3.1)
+set(NTIRPC_VERSION 1.4.0)
 if (USE_SYSTEM_NTIRPC)
   find_package(NTIRPC ${NTIRPC_VERSION} REQUIRED)
 else (USE_SYSTEM_NTIRPC)
@@ -975,7 +906,9 @@ add_subdirectory(test)
 add_subdirectory(avl)
 add_subdirectory(hashtable)
 add_subdirectory(NodeList)
-add_subdirectory(cache_inode)
+if(USE_CACHE_INODE)
+  add_subdirectory(cache_inode)
+endif(USE_CACHE_INODE)
 add_subdirectory(SAL)
 add_subdirectory(RPCAL)
 add_subdirectory(Protocols)
@@ -987,6 +920,10 @@ add_subdirectory(idmapper)
 
 add_subdirectory(MainNFSD)
 add_subdirectory(tools)
+
+if(USE_GTEST)
+  add_subdirectory(gtest)
+endif(USE_GTEST)
 
 if(USE_DBUS)
   add_subdirectory(dbus)
@@ -1009,16 +946,14 @@ message(STATUS "-------------------------------------------------------")
 message(STATUS "USE_FSAL_PROXY = ${USE_FSAL_PROXY}")
 message(STATUS "USE_FSAL_VFS = ${USE_FSAL_VFS}")
 message(STATUS "USE_FSAL_CEPH = ${USE_FSAL_CEPH}")
+message(STATUS "USE_FSAL_CEPH_MKNOD = ${USE_FSAL_CEPH_MKNOD}")
+message(STATUS "USE_FSAL_CEPH_SETLK = ${USE_FSAL_CEPH_SETLK}")
+message(STATUS "USE_FSAL_CEPH_LL_LOOKUP_ROOT = ${USE_FSAL_CEPH_LL_LOOKUP_ROOT}")
 message(STATUS "USE_FSAL_RGW = ${USE_FSAL_RGW}")
-message(STATUS "USE_FSAL_HPSS = ${USE_FSAL_HPSS}")
 message(STATUS "USE_FSAL_XFS = ${USE_FSAL_XFS}")
 message(STATUS "USE_FSAL_PANFS = ${USE_FSAL_PANFS}")
 message(STATUS "USE_FSAL_GPFS = ${USE_FSAL_GPFS}")
-message(STATUS "USE_FSAL_PT = ${USE_FSAL_PT}")
 message(STATUS "USE_FSAL_ZFS = ${USE_FSAL_ZFS}")
-message(STATUS "USE_FSAL_LUSTRE = ${USE_FSAL_LUSTRE}")
-message(STATUS "USE_FSAL_SHOOK = ${USE_FSAL_SHOOK}")
-message(STATUS "USE_FSAL_LUSTRE_UP = ${USE_FSAL_LUSTRE_UP}")
 message(STATUS "USE_FSAL_GLUSTER = ${USE_FSAL_GLUSTER}")
 message(STATUS "USE_FSAL_NULL = ${USE_FSAL_NULL}")
 message(STATUS "USE_SYSTEM_NTIRPC = ${USE_SYSTEM_NTIRPC}")
@@ -1043,6 +978,9 @@ message(STATUS "PROXY_HANDLE_MAPPING = ${PROXY_HANDLE_MAPPING}")
 message(STATUS "DEBUG_SYMS = ${DEBUG_SYMS}")
 message(STATUS "COVERAGE = ${COVERAGE}")
 message(STATUS "ENFORCE_GCC = ${ENFORCE_GCC}")
+message(STATUS "USE_GTEST = ${USE_GTEST}")
+message(STATUS "GTEST_PREFIX = ${GTEST_PREFIX}")
+message(STATUS "GTEST_MAIN = ${GTEST_MAIN}")
 message(STATUS "PROFILING = ${PROFILING}")
 message(STATUS "USE_GSS = ${USE_GSS}")
 message(STATUS "TIRPC_EPOLL = ${TIRPC_EPOLL}")
@@ -1050,13 +988,13 @@ message(STATUS "USE_9P = ${USE_9P}")
 message(STATUS "_USE_9P = ${_USE_9P}")
 message(STATUS "_USE_9P_RDMA = ${_USE_9P_RDMA}")
 message(STATUS "USE_NFS_RDMA = ${USE_NFS_RDMA}")
+message(STATUS "USE_NFS3 = ${USE_NFS3}")
+message(STATUS "USE_NLM = ${USE_NLM}")
 message(STATUS "KRB5_PREFIX = ${KRB5_PREFIX}")
 message(STATUS "CEPH_PREFIX = ${CEPH_PREFIX}")
 message(STATUS "RGW_PREFIX = ${RGW_PREFIX}")
-message(STATUS "HPSS_PREFIX = ${HPSS_PREFIX}")
 message(STATUS "GLUSTER_PREFIX = ${GLUSTER_PREFIX}")
 message(STATUS "ZFS_PREFIX = ${ZFS_PREFIX}")
-message(STATUS "LUSTRE_PREFIX = ${LUSTRE_PREFIX}")
 message(STATUS "CMAKE_PREFIX_PATH = ${CMAKE_PREFIX_PATH}")
 message(STATUS "_GIT_HEAD_COMMIT = ${_GIT_HEAD_COMMIT}")
 message(STATUS "_GIT_HEAD_COMMIT_ABBREV = ${_GIT_HEAD_COMMIT_ABBREV}")
@@ -1071,6 +1009,8 @@ message(STATUS "MODULES_PATH = ${MODULES_PATH}")
 message(STATUS "USE_TSAN = ${USE_TSAN}")
 message(STATUS "USE_LTTNG = ${USE_LTTNG}")
 message(STATUS "USE_BLKIN = ${USE_BLKIN}")
+message(STATUS "USE_VSOCK = ${USE_VSOCK}")
+message(STATUS "USE_TOOL_MULTILOCK = ${USE_TOOL_MULTILOCK}")
 
 #force command line options to be stored in cache
 set(USE_FSAL_VFS ${USE_FSAL_VFS}
@@ -1093,11 +1033,6 @@ set(USE_FSAL_CEPH ${USE_FSAL_CEPH}
    "build RGW FSAL shared library"
    FORCE)
 
-set(USE_HPSS_FSAL ${USE_HPSS_FSAL}
-  CACHE BOOL
-   "build HPSS FSAL"
-   FORCE)
-
 set(USE_FSAL_XFS ${USE_FSAL_XFS}
   CACHE BOOL
    "build XFS FSAL"
@@ -1113,34 +1048,9 @@ set(USE_FSAL_GPFS ${USE_FSAL_GPFS}
    "build GPFS FSAL"
    FORCE)
 
-set(USE_FSAL_PT ${USE_FSAL_PT}
-  CACHE BOOL
-   "build PT FSAL"
-   FORCE)
-
 set(USE_FSAL_ZFS ${USE_FSAL_ZFS}
   CACHE BOOL
    "build ZFS FSAL"
-   FORCE)
-
-set(USE_FSAL_LUSTRE ${USE_FSAL_LUSTRE}
-  CACHE BOOL
-   "build LUSTRE FSAL"
-   FORCE)
-
-set(HAVE_INCLUDE_LUSTREAPI_H ${HAVE_INCLUDE_LUSTREAPI_H}
-  CACHE BOOL
-   "build LUSTRE FSAL with lustreapi.h"
-   FORCE)
-
-set(HAVE_INCLUDE_LIBLUSTREAPI_H ${HAVE_INCLUDE_LIBLUSTREAPI_H}
-  CACHE BOOL
-   "build LUSTRE FSAL with liblustreapi.h"
-   FORCE)
-
-set(USE_FSAL_SHOOK ${USE_FSAL_SHOOK}
-  CACHE BOOL
-   "build SHOOK FSAL"
    FORCE)
 
 set(USE_FSAL_GLUSTER ${USE_FSAL_GLUSTER}
@@ -1218,6 +1128,16 @@ set(_USE_9P_RDMA ${_USE_9P_RDMA}
    "enable 9P_RDMA support"
    FORCE)
 
+set(USE_NFS3 ${USE_NFS3}
+  CACHE BOOL
+   "enable NFSv3 support"
+   FORCE)
+
+set(USE_NLM ${USE_NLM}
+  CACHE BOOL
+   "enable NLM support"
+   FORCE)
+
 set(USE_ADMIN_TOOLS ${USE_ADMIN_TOOLS}
   CACHE BOOL
   "Package Admin Scripts"
@@ -1265,24 +1185,6 @@ add_custom_target(dist COMMAND ${CMAKE_MAKE_PROGRAM} package_source)
 # %bcond_with means you add a "--with" option, default is "without this feature"
 # %bcond_without adds a"--without" so the feature is enabled by default
 # This has to be coherent with chosen FSALs
-if(USE_FSAL_LUSTRE)
-    set(BCOND_LUSTRE "%bcond_without")
-else(USE_FSAL_LUSTRE)
-    set(BCOND_LUSTRE "%bcond_with")
-endif(USE_FSAL_LUSTRE)
-
-if(USE_FSAL_LUSTRE_UP)
-    set(BCOND_FSAL_LUSTRE_UP "%bcond_without")
-else(USE_FSAL_LUSTRE_UP)
-    set(BCOND_FSAL_LUSTRE_UP "%bcond_with")
-endif(USE_FSAL_LUSTRE_UP)
-
-if(USE_FSAL_SHOOK)
-    set(BCOND_SHOOK "%bcond_without")
-else(USE_FSAL_SHOOK)
-    set(BCOND_SHOOK "%bcond_with")
-endif(USE_FSAL_SHOOK)
-
 if(USE_FSAL_ZFS)
     set(BCOND_ZFS "%bcond_without")
 else(USE_FSAL_ZFS)
@@ -1324,18 +1226,6 @@ if(USE_FSAL_GLUSTER)
 else(USE_FSAL_GLUSTER)
     set(BCOND_GLUSTER "%bcond_with")
 endif(USE_FSAL_GLUSTER)
-
-if(USE_FSAL_HPSS)
-    set(BCOND_HPSS "%bcond_without")
-else(USE_FSAL_HPSS)
-    set(BCOND_HPSS "%bcond_with")
-endif(USE_FSAL_HPSS)
-
-if(USE_FSAL_PT)
-    set(BCOND_PT "%bcond_without")
-else(USE_FSAL_PT)
-    set(BCOND_PT "%bcond_with")
-endif(USE_FSAL_PT)
 
 if(USE_FSAL_NULL)
     set(BCOND_NULLFS "%bcond_without")
@@ -1403,6 +1293,31 @@ add_custom_command(TARGET srpm
 		  VERBATIM
 		  DEPENDS dist)
 
+# Make a docker image
+set(DOCKER_TMP_INSTALL_PATH "${PROJECT_BINARY_DIR}/docker/root")
+find_package(LSB)
+if(LSB_RELEASE_EXECUTABLE)
+  string(TOLOWER ${LSB_RELEASE_ID_SHORT} DOCKER_DISTRO)
+  set(DOCKER_DISTRO_VERSION "${LSB_RELEASE_RELEASE_SHORT}")
+
+  configure_file(
+    "${PROJECT_SOURCE_DIR}/scripts/docker/entrypoint.sh-in.cmake"
+    "${PROJECT_BINARY_DIR}/docker/entrypoint.sh"
+    @ONLY
+    )
+  configure_file(
+    "${PROJECT_SOURCE_DIR}/scripts/docker/Dockerfile-in.cmake"
+    "${PROJECT_BINARY_DIR}/docker/Dockerfile"
+    @ONLY
+    )
+  add_custom_target(docker
+    COMMAND sh -c "make DESTDIR=${PROJECT_BINARY_DIR}/docker/root install"
+    COMMAND sh -c "docker build -t ganesha/dev ${PROJECT_BINARY_DIR}/docker"
+    VERBATIM )
+  add_dependencies(docker ganesha.nfsd )
+endif(LSB_RELEASE_EXECUTABLE)
+
+
 if(COVERAGE)
 	find_program(LCOV_EXEC lcov)
 	find_program(GENHTML_EXEC genhtml)
@@ -1429,7 +1344,6 @@ if(DOXYGEN_FOUND)
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     )
 endif(DOXYGEN_FOUND)
-
 
 # Include thread-sanitizer module
 include(${CMAKE_SOURCE_DIR}/cmake/tsan.cmake)

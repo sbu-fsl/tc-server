@@ -46,7 +46,6 @@
 #include "nfs4.h"
 #include "fsal.h"
 #include "sal_functions.h"
-#include "cache_inode_lru.h"
 #include "abstract_atomic.h"
 #include "city.h"
 #include "client_mgr.h"
@@ -315,11 +314,17 @@ bool client_id_has_state(nfs_client_id_t *clientid)
 
 void free_client_id(nfs_client_id_t *clientid)
 {
+	struct svc_rpc_gss_data *gd;
+
 	assert(atomic_fetch_int32_t(&clientid->cid_refcount) == 0);
 
 	if (clientid->cid_client_record != NULL)
 		dec_client_record_ref(clientid->cid_client_record);
 
+	if (clientid->cid_credential.flavor == RPCSEC_GSS) {
+		gd = clientid->cid_credential.auth_union.auth_gss.gd;
+		unref_svc_rpc_gss_data(gd, 0);
+	}
 	/* For NFSv4.1 clientids, destroy all associated sessions */
 	if (clientid->cid_minorversion > 0) {
 		struct glist_head *glist = NULL;
@@ -332,6 +337,11 @@ void free_client_id(nfs_client_id_t *clientid)
 							       session_link);
 			nfs41_Session_Del(session->session_id);
 		}
+	}
+
+	if (clientid->cid_recov_dir) {
+		gsh_free(clientid->cid_recov_dir);
+		clientid->cid_recov_dir = NULL;
 	}
 
 	PTHREAD_MUTEX_destroy(&clientid->cid_mutex);
@@ -517,15 +527,9 @@ nfs_client_id_t *create_client_id(clientid4 clientid,
 				  nfs_client_cred_t *credential,
 				  uint32_t minorversion)
 {
-	nfs_client_id_t *client_rec = pool_alloc(client_id_pool, NULL);
+	nfs_client_id_t *client_rec = pool_alloc(client_id_pool);
 	state_owner_t *owner;
-
-	if (client_rec == NULL) {
-		LogCrit(COMPONENT_CLIENTID,
-			"Unable to allocate memory for clientid %" PRIx64,
-			clientid);
-		return NULL;
-	}
+	struct svc_rpc_gss_data *gd;
 
 	PTHREAD_MUTEX_init(&client_rec->cid_mutex, NULL);
 
@@ -548,6 +552,16 @@ nfs_client_id_t *create_client_id(clientid4 clientid,
 	client_rec->cid_last_renew = time(NULL);
 	client_rec->cid_client_record = client_record;
 	client_rec->cid_credential = *credential;
+
+	/* We store the credential which includes gss context here for
+	 * using it later, so we should make sure that this doesn't go
+	 * away until we destroy this nfs clientid.
+	 */
+	if (credential->flavor == RPCSEC_GSS) {
+		gd = credential->auth_union.auth_gss.gd;
+		(void)atomic_inc_uint32_t(&gd->refcnt);
+	}
+
 	client_rec->cid_minorversion = minorversion;
 	client_rec->gsh_client = op_ctx->client;
 	inc_gsh_client_refcount(op_ctx->client);
@@ -1291,14 +1305,7 @@ int nfs_Init_client_id(void)
 	}
 
 	client_id_pool =
-	    pool_init("NFS4 Client ID Pool", sizeof(nfs_client_id_t),
-		      pool_basic_substrate, NULL, NULL, NULL);
-
-	if (client_id_pool == NULL) {
-		LogCrit(COMPONENT_INIT,
-			"NFS CLIENT_ID: Cannot init Client Id Pool");
-		return -1;
-	}
+	    pool_basic_init("NFS4 Client ID Pool", sizeof(nfs_client_id_t));
 
 	return CLIENT_ID_SUCCESS;
 }
@@ -1644,9 +1651,6 @@ nfs_client_record_t *get_client_record(const char *const value,
 
 	record = gsh_malloc(sizeof(nfs_client_record_t) + len);
 
-	if (record == NULL)
-		return NULL;
-
 	record->cr_refcount = 1;
 	record->cr_client_val_len = len;
 	record->cr_confirmed_rec = NULL;
@@ -1761,14 +1765,8 @@ nfs41_foreach_client_callback(bool(*cb) (nfs_client_id_t *cl, void *state),
 
 			if (pclientid->cid_minorversion > 0) {
 				cb_arg = gsh_malloc(
-						sizeof(struct
-							client_callback_arg));
-				if (cb_arg == NULL) {
-					LogCrit(COMPONENT_CLIENTID,
-						"malloc failed for %p",
-						pclientid);
-					continue;
-				}
+					sizeof(struct client_callback_arg));
+
 				cb_arg->cb = cb;
 				cb_arg->state = state;
 				cb_arg->pclientid = pclientid;

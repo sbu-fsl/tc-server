@@ -52,7 +52,6 @@
 #include "abstract_atomic.h"
 #include "nfs_init.h"
 #include "nfs_core.h"
-#include "cache_inode.h"
 #include "nfs_exports.h"
 #include "nfs_proto_functions.h"
 #include "nfs_file_handle.h"
@@ -93,7 +92,7 @@ void DispatchWork9P(request_data_t *req)
 	}
 
 	/* increase connection refcount */
-	atomic_inc_uint32_t(&req->r_u._9p.pconn->refcount);
+	(void) atomic_inc_uint32_t(&req->r_u._9p.pconn->refcount);
 
 	/* new-style dispatch */
 	nfs_rpc_enqueue_req(req);
@@ -228,12 +227,6 @@ void *_9p_socket_thread(void *Arg)
 
 		/* Prepare to read the message */
 		_9pmsg = gsh_malloc(_9p_conn.msize);
-		if (_9pmsg == NULL) {
-			LogCrit(COMPONENT_9P,
-				"Could not allocate 9pmsg buffer for client %s on socket %lu",
-				strcaller, tcp_sock);
-			goto end;
-		}
 
 		/* An incoming 9P request: the msg has a 4 bytes header
 		   showing the size of the msg including the header */
@@ -275,12 +268,7 @@ void *_9p_socket_thread(void *Arg)
 					    0, 0, 0);
 
 		/* Message is good. */
-		req = pool_alloc(request_pool, NULL);
-		if (req == NULL) {
-			LogCrit(COMPONENT_9P,
-				"Could not allocate memory from request pool");
-			goto end;
-		}
+		req = pool_alloc(request_pool);
 
 		req->rtype = _9P_REQUEST;
 		req->r_u._9p._9pmsg = _9pmsg;

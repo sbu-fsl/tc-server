@@ -7,10 +7,6 @@ add_subdirectory(FSAL_PSEUDO)
 # All we need to do here is control the
 # build of chosen fsals
 
-if(USE_FSAL_HPSS)
-  add_subdirectory(FSAL_HPSS)
-endif(USE_FSAL_HPSS)
-
 if(USE_FSAL_PROXY)
   add_subdirectory(FSAL_PROXY)
 endif(USE_FSAL_PROXY)
@@ -23,17 +19,9 @@ if(USE_FSAL_RGW)
   add_subdirectory(FSAL_RGW)
 endif(USE_FSAL_RGW)
 
-if(USE_FSAL_LUSTRE)
-  add_subdirectory(FSAL_LUSTRE)
-endif(USE_FSAL_LUSTRE)
-
 if(USE_FSAL_GPFS)
   add_subdirectory(FSAL_GPFS)
 endif(USE_FSAL_GPFS)
-
-if(USE_FSAL_PT)
-  add_subdirectory(FSAL_PT)
-endif(USE_FSAL_PT)
 
 if(USE_FSAL_ZFS)
   add_subdirectory(FSAL_ZFS)

@@ -46,6 +46,7 @@
 #include "abstract_mem.h"
 #include "nfs_exports.h"
 #include "export_mgr.h"
+#include "mdcache.h"
 
 /**
  * Ceph global module object.
@@ -70,6 +71,11 @@ static fsal_staticfsinfo_t default_ceph_info = {
 	.no_trunc = true,
 	.chown_restricted = true,
 	.case_preserving = true,
+#ifdef USE_FSAL_CEPH_SETLK
+	.lock_support = true,
+	.lock_support_owner = true,
+	.lock_support_async_block = false,
+#endif
 	.unique_handles = true,
 	.homogenous = true,
 };
@@ -122,6 +128,33 @@ static fsal_status_t init_config(struct fsal_module *module_in,
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
+#ifdef CEPH_FS_LOOKUP_ROOT
+static fsal_status_t find_cephfs_root(struct ceph_mount_info *cmount,
+					Inode **pi)
+{
+	return ceph2fsal_error(ceph_ll_lookup_root(cmount, pi));
+}
+#else /* CEPH_FS_LOOKUP_ROOT */
+static fsal_status_t find_cephfs_root(struct ceph_mount_info *cmount,
+					Inode **pi)
+{
+	Inode *i;
+	vinodeno_t root;
+
+	root.ino.val = CEPH_INO_ROOT;
+#ifdef CEPH_NOSNAP
+	root.snapid.val = CEPH_NOSNAP;
+#else
+	root.snapid.val = 0;
+#endif /* CEPH_NOSNAP */
+	i = ceph_ll_get_inode(cmount, root);
+	if (!i)
+		return fsalstat(ERR_FSAL_SERVERFAULT, 0);
+	*pi = i;
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+}
+#endif /* CEPH_FS_LOOKUP_ROOT */
+
 /**
  * @brief Create a new export under this FSAL
  *
@@ -151,15 +184,13 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 	/* The status code to return */
 	fsal_status_t status = { ERR_FSAL_NO_ERROR, 0 };
 	/* A fake argument list for Ceph */
-	const char *argv[] = { "FSAL_CEPH", op_ctx->export->fullpath };
+	const char *argv[] = { "FSAL_CEPH", op_ctx->ctx_export->fullpath };
 	/* The internal export object */
 	struct export *export = gsh_calloc(1, sizeof(struct export));
 	/* The 'private' root handle */
 	struct handle *handle = NULL;
 	/* Root inode */
 	struct Inode *i = NULL;
-	/* Root vinode */
-	vinodeno_t root;
 	/* Stat for root */
 	struct stat st;
 	/* Return code */
@@ -169,23 +200,8 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 	/* True if we have called fsal_export_init */
 	bool initialized = false;
 
-	if (export == NULL) {
-		status.major = ERR_FSAL_NOMEM;
-		LogCrit(COMPONENT_FSAL,
-			"Unable to allocate export object for %s.",
-			op_ctx->export->fullpath);
-		goto error;
-	}
-
-	if (fsal_export_init(&export->export) != 0) {
-		status.major = ERR_FSAL_NOMEM;
-		LogCrit(COMPONENT_FSAL,
-			"Unable to allocate export ops vectors for %s.",
-			op_ctx->export->fullpath);
-		goto error;
-	}
+	fsal_export_init(&export->export);
 	export_ops_init(&export->export.exp_ops);
-	export->export.up_ops = up_ops;
 
 	initialized = true;
 
@@ -195,7 +211,7 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 		status.major = ERR_FSAL_SERVERFAULT;
 		LogCrit(COMPONENT_FSAL,
 			"Unable to create Ceph handle for %s.",
-			op_ctx->export->fullpath);
+			op_ctx->ctx_export->fullpath);
 		goto error;
 	}
 
@@ -204,7 +220,7 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 		status.major = ERR_FSAL_SERVERFAULT;
 		LogCrit(COMPONENT_FSAL,
 			"Unable to read Ceph configuration for %s.",
-			op_ctx->export->fullpath);
+			op_ctx->ctx_export->fullpath);
 		goto error;
 	}
 
@@ -213,7 +229,7 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 		status.major = ERR_FSAL_SERVERFAULT;
 		LogCrit(COMPONENT_FSAL,
 			"Unable to parse Ceph configuration for %s.",
-			op_ctx->export->fullpath);
+			op_ctx->ctx_export->fullpath);
 		goto error;
 	}
 
@@ -222,7 +238,7 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 		status.major = ERR_FSAL_SERVERFAULT;
 		LogCrit(COMPONENT_FSAL,
 			"Unable to mount Ceph cluster for %s.",
-			op_ctx->export->fullpath);
+			op_ctx->ctx_export->fullpath);
 		goto error;
 	}
 
@@ -230,25 +246,20 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 		status.major = ERR_FSAL_SERVERFAULT;
 		LogCrit(COMPONENT_FSAL,
 			"Unable to attach export for %s.",
-			op_ctx->export->fullpath);
+			op_ctx->ctx_export->fullpath);
 		goto error;
 	}
 
 	export->export.fsal = module_in;
+	export->export.up_ops = up_ops;
 
 	LogDebug(COMPONENT_FSAL,
 		 "Ceph module export %s.",
-		 op_ctx->export->fullpath);
+		 op_ctx->ctx_export->fullpath);
 
-	root.ino.val = CEPH_INO_ROOT;
-#ifdef CEPH_NOSNAP
-	root.snapid.val = CEPH_NOSNAP;
-#endif /* CEPH_NOSNAP */
-	i = ceph_ll_get_inode(export->cmount, root);
-	if (!i) {
-		status.major = ERR_FSAL_SERVERFAULT;
+	status = find_cephfs_root(export->cmount, &i);
+	if (FSAL_IS_ERROR(status))
 		goto error;
-	}
 
 	rc = ceph_ll_getattr(export->cmount, i, &st, 0, 0);
 	if (rc < 0) {
@@ -256,14 +267,11 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 		goto error;
 	}
 
-	rc = construct_handle(&st, i, export, &handle);
-	if (rc < 0) {
-		status = ceph2fsal_error(rc);
-		goto error;
-	}
+	construct_handle(&st, i, export, &handle);
 
 	export->root = handle;
 	op_ctx->fsal_export = &export->export;
+
 	return status;
 
  error:
@@ -280,6 +288,17 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 		initialized = false;
 
 	return status;
+}
+
+/**
+ * @brief Indicate support for extended operations.
+ *
+ * @retval true if extended operations are supported.
+ */
+
+bool ceph_support_ex(struct fsal_obj_handle *obj)
+{
+	return true;
 }
 
 /**
@@ -315,6 +334,7 @@ MODULE_INIT void init(void)
 #endif				/* CEPH_PNFS */
 	myself->m_ops.create_export = create_export;
 	myself->m_ops.init_config = init_config;
+	myself->m_ops.support_ex = ceph_support_ex;
 }
 
 /**

@@ -46,6 +46,7 @@
 #include "idmapper.h"
 #include "uid2grp.h"
 #include "export_mgr.h"
+#include "fsal_convert.h"
 
 /**
  * @brief Allocate a new struct _9p_user_cred, with refcounter set to 1.
@@ -55,10 +56,9 @@
 static struct _9p_user_cred *new_9p_user_creds()
 {
 	struct _9p_user_cred *result =
-		gsh_calloc(sizeof(struct _9p_user_cred), 1);
+		gsh_calloc(1, sizeof(struct _9p_user_cred));
 
-	if (result != NULL)
-		result->refcount = 1;
+	result->refcount = 1;
 
 	return result;
 }
@@ -74,13 +74,13 @@ static struct _9p_user_cred *new_9p_user_creds()
  */
 static struct user_cred *get_user_cred_ref(struct _9p_user_cred *creds)
 {
-	atomic_inc_int64_t(&creds->refcount);
+	(void) atomic_inc_int64_t(&creds->refcount);
 	return &creds->creds;
 }
 
 void get_9p_user_cred_ref(struct _9p_user_cred *creds)
 {
-	atomic_inc_int64_t(&creds->refcount);
+	(void) atomic_inc_int64_t(&creds->refcount);
 }
 
 void release_9p_user_cred_ref(struct _9p_user_cred *creds)
@@ -118,13 +118,10 @@ int _9p_init(void)
 
 void _9p_init_opctx(struct _9p_fid *pfid, struct _9p_request_data *req9p)
 {
-
-	struct gsh_export *export = pfid->export;
-
-	if (export != NULL) {
+	if (pfid->export != NULL) {
 		/* export affectation (require refcount handling). */
-		if (op_ctx->export != export) {
-			if (op_ctx->export != NULL) {
+		if (op_ctx->ctx_export != pfid->export) {
+			if (op_ctx->ctx_export != NULL) {
 				LogCrit(COMPONENT_9P,
 					"Op_ctx was already initialized, or was not allocated/cleaned up properly.");
 				/* This tells there's an error in the code.
@@ -137,11 +134,10 @@ void _9p_init_opctx(struct _9p_fid *pfid, struct _9p_request_data *req9p)
 				assert(false);
 			}
 
-			get_gsh_export_ref(export);
-			op_ctx->export = export;
+			get_gsh_export_ref(pfid->export);
+			op_ctx->ctx_export = pfid->export;
+			op_ctx->fsal_export = op_ctx->ctx_export->fsal_export;
 		}
-
-		op_ctx->fsal_export = export->fsal_export;
 	}
 
 	if (req9p != NULL)
@@ -152,18 +148,14 @@ void _9p_init_opctx(struct _9p_fid *pfid, struct _9p_request_data *req9p)
 
 void _9p_release_opctx(void)
 {
-	struct gsh_export *export = op_ctx->export;
-
-	if (export != NULL) {
-		op_ctx->export = NULL;
-		put_gsh_export(export);
+	if (op_ctx->ctx_export != NULL) {
+		put_gsh_export(op_ctx->ctx_export);
+		op_ctx->ctx_export = NULL;
 	}
 
-	struct user_cred *creds = op_ctx->creds;
-
-	if (creds != NULL) {
+	if (op_ctx->creds != NULL) {
+		release_user_cred_ref(op_ctx->creds);
 		op_ctx->creds = NULL;
-		release_user_cred_ref(creds);
 	}
 }
 
@@ -175,8 +167,6 @@ int _9p_tools_get_req_context_by_uid(u32 uid, struct _9p_fid *pfid)
 		return -ENOENT;
 
 	pfid->ucred = new_9p_user_creds();
-	if (pfid->ucred == NULL)
-		return -ENOMEM;
 
 	pfid->gdata = grpdata;
 	pfid->ucred->creds.caller_uid = grpdata->uid;
@@ -188,8 +178,6 @@ int _9p_tools_get_req_context_by_uid(u32 uid, struct _9p_fid *pfid)
 		release_user_cred_ref(op_ctx->creds);
 	op_ctx->creds = get_user_cred_ref(pfid->ucred);
 
-	op_ctx->caller_addr = NULL;	/* Useless for 9P, we'll see
-					 * if daemon crashes... */
 	op_ctx->req_type = _9P_REQUEST;
 
 	return 0;
@@ -208,8 +196,6 @@ int _9p_tools_get_req_context_by_name(int uname_len, char *uname_str,
 		return -ENOENT;
 
 	pfid->ucred = new_9p_user_creds();
-	if (pfid->ucred == NULL)
-		return -ENOMEM;
 
 	pfid->gdata = grpdata;
 	pfid->ucred->creds.caller_uid = grpdata->uid;
@@ -221,101 +207,94 @@ int _9p_tools_get_req_context_by_name(int uname_len, char *uname_str,
 		release_user_cred_ref(op_ctx->creds);
 	op_ctx->creds = get_user_cred_ref(pfid->ucred);
 
-	op_ctx->caller_addr = NULL;	/* Useless for 9P, we'll see
-					 * if daemon crashes... */
 	op_ctx->req_type = _9P_REQUEST;
 
 	return 0;
 }				/* _9p_tools_get_fsal_cred */
 
-int _9p_tools_errno(cache_inode_status_t cache_status)
+int _9p_tools_errno(fsal_status_t fsal_status)
 {
 	int rc = 0;
 
-	switch (cache_status) {
-	case CACHE_INODE_SUCCESS:
+	switch (fsal_status.major) {
+	case ERR_FSAL_NO_ERROR:
 		rc = 0;
 		break;
 
-	case CACHE_INODE_MALLOC_ERROR:
+	case ERR_FSAL_NOMEM:
 		rc = ENOMEM;
 		break;
 
-	case CACHE_INODE_NOT_A_DIRECTORY:
+	case ERR_FSAL_NOTDIR:
 		rc = ENOTDIR;
 		break;
 
-	case CACHE_INODE_ENTRY_EXISTS:
+	case ERR_FSAL_EXIST:
 		rc = EEXIST;
 		break;
 
-	case CACHE_INODE_DIR_NOT_EMPTY:
+	case ERR_FSAL_NOTEMPTY:
 		rc = ENOTEMPTY;
 		break;
 
-	case CACHE_INODE_NOT_FOUND:
+	case ERR_FSAL_NOENT:
 		rc = ENOENT;
 		break;
 
-	case CACHE_INODE_IS_A_DIRECTORY:
+	case ERR_FSAL_ISDIR:
 		rc = EISDIR;
 		break;
 
-	case CACHE_INODE_FSAL_EPERM:
-	case CACHE_INODE_FSAL_ERR_SEC:
+	case ERR_FSAL_PERM:
+	case ERR_FSAL_SEC:
 		rc = EPERM;
 		break;
 
-	case CACHE_INODE_INVALID_ARGUMENT:
-	case CACHE_INODE_NAME_TOO_LONG:
-	case CACHE_INODE_INCONSISTENT_ENTRY:
-	case CACHE_INODE_FSAL_ERROR:
-	case CACHE_INODE_BAD_TYPE:
-	case CACHE_INODE_STATE_ERROR:
-	case CACHE_INODE_POOL_MUTEX_INIT_ERROR:
-	case CACHE_INODE_INIT_ENTRY_FAILED:
+	case ERR_FSAL_INVAL:
+	case ERR_FSAL_NAMETOOLONG:
+	case ERR_FSAL_NOT_OPENED:
+	case ERR_FSAL_BADTYPE:
+	case ERR_FSAL_SYMLINK:
 		rc = EINVAL;
 		break;
 
-	case CACHE_INODE_NO_SPACE_LEFT:
+	case ERR_FSAL_NOSPC:
 		rc = ENOSPC;
 		break;
 
-	case CACHE_INODE_READ_ONLY_FS:
+	case ERR_FSAL_ROFS:
 		rc = EROFS;
 		break;
 
-	case CACHE_INODE_ESTALE:
+	case ERR_FSAL_STALE:
+	case ERR_FSAL_FHEXPIRED:
 		rc = ESTALE;
 		break;
 
-	case CACHE_INODE_QUOTA_EXCEEDED:
+	case ERR_FSAL_DQUOT:
+	case ERR_FSAL_NO_QUOTA:
 		rc = EDQUOT;
 		break;
 
-	case CACHE_INODE_IO_ERROR:
-	case CACHE_INODE_ASYNC_POST_ERROR:
-	case CACHE_INODE_GET_NEW_LRU_ENTRY:
-	case CACHE_INODE_LRU_ERROR:
-	case CACHE_INODE_HASH_SET_ERROR:
-	case CACHE_INODE_INSERT_ERROR:
-	case CACHE_INODE_HASH_TABLE_ERROR:
+	case ERR_FSAL_IO:
+	case ERR_FSAL_NXIO:
 		rc = EIO;
 		break;
 
-	case CACHE_INODE_NOT_SUPPORTED:
+	case ERR_FSAL_NOTSUPP:
+	case ERR_FSAL_ATTRNOTSUPP:
 		rc = ENOTSUP;
 		break;
 
-	case CACHE_INODE_FSAL_EACCESS:
+	case ERR_FSAL_ACCESS:
 		rc = EACCES;
 		break;
 
-	case CACHE_INODE_DELAY:
+	case ERR_FSAL_DELAY:
 		rc = EAGAIN;
 		break;
 
-	case CACHE_INODE_NO_DATA:
+	case ERR_FSAL_NO_DATA:
 		rc = ENODATA;
 		break;
 
@@ -344,8 +323,25 @@ void _9p_openflags2FSAL(u32 *inflags, fsal_openflags_t *outflags)
 
 void free_fid(struct _9p_fid *pfid)
 {
+	if (pfid->state != NULL) {
+		if ((pfid->pentry->type == REGULAR_FILE) && pfid->opens &&
+		    pfid->pentry->fsal->m_ops.support_ex(pfid->pentry)) {
+			/* We need to close the state before freeing the state.
+			 */
+			(void) pfid->pentry->obj_ops.close2(
+						pfid->pentry,
+						pfid->state);
+		}
+
+		pfid->state->state_exp->exp_ops.free_state(
+				pfid->state->state_exp, pfid->state);
+	}
+
 	if (pfid->pentry != NULL)
-		cache_inode_put(pfid->pentry);
+		pfid->pentry->obj_ops.put_ref(pfid->pentry);
+
+	if (pfid->ppentry != NULL)
+		pfid->ppentry->obj_ops.put_ref(pfid->ppentry);
 
 	if (pfid->export != NULL)
 		put_gsh_export(pfid->export);
@@ -360,7 +356,6 @@ void free_fid(struct _9p_fid *pfid)
 int _9p_tools_clunk(struct _9p_fid *pfid)
 {
 	fsal_status_t fsal_status;
-	cache_inode_status_t cache_status;
 
 	/* pentry may be null in the case of an aborted TATTACH
 	 * this would happens when trying to mount a non-existing
@@ -388,48 +383,56 @@ int _9p_tools_clunk(struct _9p_fid *pfid)
 		/* Do we handle system.posix_acl_access */
 		if (pfid->specdata.xattr.xattr_id == ACL_ACCESS_XATTR_ID) {
 			fsal_status =
-			    pfid->pentry->obj_handle->obj_ops.setextattr_value(
-					pfid->pentry->obj_handle,
+			    pfid->pentry->obj_ops.setextattr_value(
+					pfid->pentry,
 					"system.posix_acl_access",
 					pfid->specdata.xattr.xattr_content,
 					pfid->specdata.xattr.xattr_size,
 					false);
+			if (FSAL_IS_ERROR(fsal_status)) {
+				free_fid(pfid);
+				return _9p_tools_errno(fsal_status);
+			}
 		} else {
 			/* Write the xattr content */
-			fsal_status = pfid->pentry->obj_handle->obj_ops.
-				setextattr_value_by_id(pfid->pentry->obj_handle,
+			fsal_status =
+				pfid->pentry->obj_ops.setextattr_value_by_id(
+					pfid->pentry,
 					pfid->specdata.xattr.xattr_id,
 					pfid->specdata.xattr.xattr_content,
 					pfid->specdata.xattr.xattr_size);
 			if (FSAL_IS_ERROR(fsal_status)) {
 				free_fid(pfid);
-				return _9p_tools_errno(
-					   cache_inode_error_convert(
-					       fsal_status));
+				return _9p_tools_errno(fsal_status);
 			}
 		}
 	}
 
 	/* If object is an opened file, close it */
-	if ((pfid->pentry->type == REGULAR_FILE) && is_open(pfid->pentry)) {
-		if (pfid->opens) {
-			cache_inode_dec_pin_ref(pfid->pentry, false);
-			pfid->opens = 0;	/* dead */
+	if ((pfid->pentry->type == REGULAR_FILE) && pfid->opens) {
+		pfid->pentry->obj_ops.put_ref(pfid->pentry);
+		pfid->opens = 0;	/* dead */
 
-			/* Under this flag, pin ref is still checked */
-			cache_status =
-			    cache_inode_close(pfid->pentry,
-					      CACHE_INODE_FLAG_REALLYCLOSE);
-			if (cache_status != CACHE_INODE_SUCCESS) {
+		LogDebug(COMPONENT_9P,
+			 "Calling close on %s entry %p",
+			 object_file_type_to_str(pfid->pentry->type),
+			 pfid->pentry);
+
+		if (pfid->pentry->fsal->m_ops.support_ex(pfid->pentry)) {
+			fsal_status =
+			    pfid->pentry->obj_ops.close2(pfid->pentry,
+							 pfid->state);
+
+			if (FSAL_IS_ERROR(fsal_status)) {
 				free_fid(pfid);
-				return _9p_tools_errno(cache_status);
+				return _9p_tools_errno(fsal_status);
 			}
-			cache_status =
-			    cache_inode_refresh_attrs_locked(pfid->pentry);
-			if (cache_status != CACHE_INODE_SUCCESS
-			    && cache_status != CACHE_INODE_ESTALE) {
+		} else {
+			/* Under this flag, pin ref is still checked */
+			fsal_status = fsal_close(pfid->pentry);
+			if (FSAL_IS_ERROR(fsal_status)) {
 				free_fid(pfid);
-				return _9p_tools_errno(cache_status);
+				return _9p_tools_errno(fsal_status);
 			}
 		}
 	}
@@ -442,6 +445,12 @@ void _9p_cleanup_fids(struct _9p_conn *conn)
 {
 	int i;
 
+	/* Allocate op_ctx, is should always be NULL here
+	 * Note we only need it if there is a non-null fid,
+	 * might be worth optimizing for huge clusters
+	 */
+	op_ctx = gsh_calloc(1, sizeof(struct req_op_context));
+
 	for (i = 0; i < _9P_FID_PER_CONN; i++) {
 		if (conn->fids[i]) {
 			_9p_init_opctx(conn->fids[i], NULL);
@@ -450,4 +459,7 @@ void _9p_cleanup_fids(struct _9p_conn *conn)
 			conn->fids[i] = NULL;	/* poison the entry */
 		}
 	}
+
+	gsh_free(op_ctx);
+	op_ctx = NULL;
 }

@@ -71,8 +71,6 @@ bool idmapper_init(void)
 			return false;
 		}
 		owner_domain.addr = gsh_malloc(NFS4_MAX_DOMAIN_LEN + 1);
-		if (owner_domain.addr == NULL)
-			return false;
 
 		if (nfs4_get_default_domain
 		    (NULL, owner_domain.addr, NFS4_MAX_DOMAIN_LEN) != 0) {
@@ -85,9 +83,6 @@ bool idmapper_init(void)
 	if (nfs_param.nfsv4_param.use_getpwnam) {
 		owner_domain.addr = gsh_strdup(nfs_param.nfsv4_param
 					       .domainname);
-		if (owner_domain.addr == NULL)
-			return false;
-
 		owner_domain.len = strlen(nfs_param.nfsv4_param.domainname);
 	}
 
@@ -115,7 +110,7 @@ static bool xdr_encode_nfs4_princ(XDR *xdrs, uint32_t id, bool group)
 	if (nfs_param.nfsv4_param.only_numeric_owners) {
 		/* 2**32 is 10 digits long in decimal */
 		struct gsh_buffdesc name;
-		char *namebuf = alloca(11);
+		char namebuf[11];
 
 		name.addr = namebuf;
 		sprintf(namebuf, "%"PRIu32, id);
@@ -359,12 +354,6 @@ static int name_to_gid(const char *name, gid_t *gid)
 
 	do {
 		buf = gsh_malloc(buflen);
-		if (buf == NULL) {
-			LogCrit(COMPONENT_IDMAPPER,
-				"gsh_malloc failed, buflen: %zu", buflen);
-
-			return ENOMEM;
-		}
 
 		err = getgrnam_r(name, &g, buf, buflen, &gres);
 		if (err == ERANGE) {
@@ -657,8 +646,8 @@ bool principal2uid(char *principal, uid_t *uid, gid_t *gid)
 #endif
 {
 #ifdef USE_NFSIDMAP
-	uid_t gss_uid = ANON_UID;
-	gid_t gss_gid = ANON_GID;
+	uid_t gss_uid = -1;
+	gid_t gss_gid = -1;
 	const gid_t *gss_gidres = NULL;
 	int rc;
 	bool success;
@@ -675,8 +664,14 @@ bool principal2uid(char *principal, uid_t *uid, gid_t *gid)
 	PTHREAD_RWLOCK_rdlock(&idmapper_user_lock);
 	success =
 	    idmapper_lookup_by_uname(&princbuff, &gss_uid, &gss_gidres, true);
-	if (success && gss_gidres)
+
+	/* We do need uid and gid. If gid is not in the cache, treat it as a
+	 * failure.
+	 */
+	if (success && gss_gidres != NULL)
 		gss_gid = *gss_gidres;
+	else
+		success = false;
 	PTHREAD_RWLOCK_unlock(&idmapper_user_lock);
 	if (unlikely(!success)) {
 		if ((princbuff.len >= 4)
@@ -693,6 +688,7 @@ bool principal2uid(char *principal, uid_t *uid, gid_t *gid)
 			/* This is a "root" request made from the
 			   hostbased nfs principal, use root */
 			*uid = 0;
+			*gid = 0;
 			return true;
 		}
 		/* nfs4_gss_princ_to_ids required to extract uid/gid

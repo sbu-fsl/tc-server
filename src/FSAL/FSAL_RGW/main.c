@@ -38,6 +38,7 @@
 #include "abstract_mem.h"
 #include "nfs_exports.h"
 #include "export_mgr.h"
+#include "mdcache.h"
 
 static const char *module_name = "RGW";
 
@@ -103,8 +104,8 @@ static pthread_mutex_t init_mtx = PTHREAD_MUTEX_INITIALIZER;
  */
 
 static fsal_status_t init_config(struct fsal_module *module_in,
-				 config_file_t config_struct,
-				 struct config_error_type *err_type)
+				config_file_t config_struct,
+				struct config_error_type *err_type)
 {
 	struct rgw_fsal_module *myself =
 	    container_of(module_in, struct rgw_fsal_module, fsal);
@@ -122,6 +123,17 @@ static fsal_status_t init_config(struct fsal_module *module_in,
 		return fsalstat(ERR_FSAL_INVAL, 0);
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+}
+
+ /**
+ * @brief Indicate support for extended operations.
+ *
+ * @retval true if extended operations are supported.
+ */
+
+bool support_ex(struct fsal_obj_handle *obj)
+{
+	return true;
 }
 
 /**
@@ -173,13 +185,13 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 	/* The status code to return */
 	fsal_status_t status = { ERR_FSAL_NO_ERROR, 0 };
 	/* The internal export object */
-	struct rgw_export *export;
+	struct rgw_export *export = NULL;
 	/* The 'private' root handle */
 	struct rgw_handle *handle = NULL;
 	/* Stat for root */
 	struct stat st;
 	/* Return code */
-	int rc;
+	int rc = 0;
 	/* Return code from RGW calls */
 	int rgw_status;
 	/* True if we have called fsal_export_init */
@@ -244,18 +256,22 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 		PTHREAD_MUTEX_unlock(&init_mtx);
 	}
 
+	if (rc != 0) {
+		status.major = ERR_FSAL_BAD_INIT;
+		goto error;
+	}
+
 	export = gsh_calloc(1, sizeof(struct rgw_export));
 	if (export == NULL) {
 		status.major = ERR_FSAL_NOMEM;
 		LogCrit(COMPONENT_FSAL,
 			"Unable to allocate export object for %s.",
-			op_ctx->export->fullpath);
+			op_ctx->ctx_export->fullpath);
 		goto error;
 	}
 
 	fsal_export_init(&export->export);
 	export_ops_init(&export->export.exp_ops);
-	export->export.up_ops = up_ops;
 
 	/* get params for this export, if any */
 	if (parse_node) {
@@ -282,7 +298,7 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 		status.major = ERR_FSAL_SERVERFAULT;
 		LogCrit(COMPONENT_FSAL,
 			"Unable to mount RGW cluster for %s.",
-			op_ctx->export->fullpath);
+			op_ctx->ctx_export->fullpath);
 		goto error;
 	}
 
@@ -290,7 +306,7 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 		status.major = ERR_FSAL_SERVERFAULT;
 		LogCrit(COMPONENT_FSAL,
 			"Unable to attach export for %s.",
-			op_ctx->export->fullpath);
+			op_ctx->ctx_export->fullpath);
 		goto error;
 	}
 
@@ -298,7 +314,7 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 
 	LogDebug(COMPONENT_FSAL,
 		 "RGW module export %s.",
-		 op_ctx->export->fullpath);
+		 op_ctx->ctx_export->fullpath);
 
 	rc = rgw_getattr(export->rgw_fs, export->rgw_fs->root_fh, &st,
 			RGW_GETATTR_FLAG_NONE);
@@ -312,6 +328,9 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 	}
 
 	op_ctx->fsal_export = &export->export;
+
+	export->export.up_ops = up_ops;
+
 	return status;
 
  error:
@@ -355,6 +374,7 @@ MODULE_INIT void init(void)
 	/* Set up module operations */
 	myself->m_ops.create_export = create_export;
 	myself->m_ops.init_config = init_config;
+	myself->m_ops.support_ex = support_ex;
 }
 
 /**

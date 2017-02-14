@@ -43,7 +43,7 @@
 int nlm4_Unlock(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 {
 	nlm4_unlockargs *arg = &args->arg_nlm4_unlock;
-	cache_entry_t *pentry;
+	struct fsal_obj_handle *obj;
 	state_status_t state_status = STATE_SUCCESS;
 	char buffer[MAXNETOBJ_SZ * 2];
 	state_nsm_client_t *nsm_client;
@@ -57,7 +57,7 @@ int nlm4_Unlock(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 	 * responding to an NLM_*_MSG call, so we check here if the export is
 	 * NULL and if so, handle the response.
 	 */
-	if (op_ctx->export == NULL) {
+	if (op_ctx->ctx_export == NULL) {
 		res->res_nlm4.stat.stat = NLM4_STALE_FH;
 		LogInfo(COMPONENT_NLM, "INVALID HANDLE: nlm4_Unlock");
 		return NFS_REQ_OK;
@@ -71,13 +71,7 @@ int nlm4_Unlock(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 		 (unsigned long long)arg->alock.l_offset,
 		 (unsigned long long)arg->alock.l_len, buffer);
 
-	if (!copy_netobj(&res->res_nlm4test.cookie, &arg->cookie)) {
-		res->res_nlm4.stat.stat = NLM4_FAILED;
-		LogDebug(COMPONENT_NLM,
-			 "REQUEST RESULT: nlm4_Unlock %s",
-			 lock_result_str(res->res_nlm4.stat.stat));
-		return NFS_REQ_OK;
-	}
+	copy_netobj(&res->res_nlm4test.cookie, &arg->cookie);
 
 	if (nfs_in_grace()) {
 		res->res_nlm4.stat.stat = NLM4_DENIED_GRACE_PERIOD;
@@ -92,7 +86,7 @@ int nlm4_Unlock(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 				    false,	/* exlcusive doesn't matter */
 				    &arg->alock,
 				    &lock,
-				    &pentry,
+				    &obj,
 				    CARE_NOT,
 				    &nsm_client,
 				    &nlm_client,
@@ -113,9 +107,7 @@ int nlm4_Unlock(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 
 	if (state != NULL)
 		state_status =
-			state_unlock(pentry, state, nlm_owner, false, 0, &lock);
-	else
-		state_status = STATE_SUCCESS;
+		  state_unlock(obj, state, nlm_owner, false, 0, &lock);
 
 	if (state_status != STATE_SUCCESS) {
 		/* Unlock could fail in the FSAL and make a bit of a mess,
@@ -134,7 +126,7 @@ int nlm4_Unlock(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 	dec_nsm_client_ref(nsm_client);
 	dec_nlm_client_ref(nlm_client);
 	dec_state_owner_ref(nlm_owner);
-	cache_inode_put(pentry);
+	obj->obj_ops.put_ref(obj);
 
 	LogDebug(COMPONENT_NLM, "REQUEST RESULT: nlm4_Unlock %s",
 		 lock_result_str(res->res_nlm4.stat.stat));

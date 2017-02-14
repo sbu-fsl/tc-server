@@ -53,6 +53,8 @@
 #define DUPREQ_BAD_ADDR1 0x01	/* safe for marked pointers, etc */
 #define DUPREQ_NOCACHE   0x02
 
+#define DUPREQ_MAX_RETRIES 5
+
 pool_t *dupreq_pool;
 pool_t *nfs_res_pool;
 pool_t *tcp_drc_pool;		/* pool of per-connection DRC objects */
@@ -245,13 +247,6 @@ static inline void init_shared_drc(void)
 		drc->xt.cachesz = drc->cachesz;
 		xp->cache =
 		    gsh_calloc(drc->cachesz, sizeof(struct opr_rbtree_node *));
-		if (unlikely(!xp->cache)) {
-			LogCrit(COMPONENT_DUPREQ,
-				"UDP DRC hash partition allocation failed (ix=%d)",
-				ix);
-			drc->cachesz = 0;
-			break;
-		}
 	}
 }
 
@@ -262,26 +257,12 @@ void dupreq2_pkginit(void)
 {
 	int code __attribute__ ((unused)) = 0;
 
-	dupreq_pool = pool_init("Duplicate Request Pool",
-				sizeof(dupreq_entry_t),
-				pool_basic_substrate, NULL, NULL, NULL);
-	if (unlikely(!(dupreq_pool)))
-		LogFatal(COMPONENT_INIT,
-			 "Error while allocating duplicate request pool");
+	dupreq_pool =
+	    pool_basic_init("Duplicate Request Pool", sizeof(dupreq_entry_t));
 
-	nfs_res_pool = pool_init("nfs_res_t pool", sizeof(nfs_res_t),
-				 pool_basic_substrate,
-				 NULL, NULL, NULL);
-	if (unlikely(!(nfs_res_pool)))
-		LogFatal(COMPONENT_INIT,
-			 "Error while allocating nfs_res_t pool");
+	nfs_res_pool = pool_basic_init("nfs_res_t pool", sizeof(nfs_res_t));
 
-	tcp_drc_pool = pool_init("TCP DRC Pool", sizeof(drc_t),
-				 pool_basic_substrate,
-				 NULL, NULL, NULL);
-	if (unlikely(!(tcp_drc_pool)))
-		LogFatal(COMPONENT_INIT,
-			 "Error while allocating TCP DRC pool");
+	tcp_drc_pool = pool_basic_init("TCP DRC Pool", sizeof(drc_t));
 
 	drc_st = gsh_calloc(1, sizeof(struct drc_st));
 
@@ -356,13 +337,8 @@ static inline enum drc_type get_drc_type(struct svc_req *req)
  */
 static inline drc_t *alloc_tcp_drc(enum drc_type dtype)
 {
-	drc_t *drc = pool_alloc(tcp_drc_pool, NULL);
+	drc_t *drc = pool_alloc(tcp_drc_pool);
 	int ix, code __attribute__ ((unused)) = 0;
-
-	if (unlikely(!drc)) {
-		LogCrit(COMPONENT_DUPREQ, "alloc TCP DRC failed");
-		goto out;
-	}
 
 	drc->type = dtype;	/* DRC_TCP_V3 or DRC_TCP_V4 */
 	drc->refcnt = 0;
@@ -394,16 +370,8 @@ static inline drc_t *alloc_tcp_drc(enum drc_type dtype)
 		drc->xt.cachesz = drc->cachesz;
 		xp->cache =
 		    gsh_calloc(drc->cachesz, sizeof(struct opr_rbtree_node *));
-		if (unlikely(!xp->cache)) {
-			LogCrit(COMPONENT_DUPREQ,
-				"TCP DRC hash partition allocation failed (ix=%d)",
-				ix);
-			drc->cachesz = 0;
-			break;
-		}
 	}
 
- out:
 	return drc;
 }
 
@@ -416,8 +384,12 @@ static inline drc_t *alloc_tcp_drc(enum drc_type dtype)
  */
 static inline void free_tcp_drc(drc_t *drc)
 {
-	if (drc->xt.tree[0].cache)
-		gsh_free(drc->xt.tree[0].cache);
+	int ix;
+
+	for (ix = 0; ix < drc->npart; ++ix) {
+		if (drc->xt.tree[ix].cache)
+			gsh_free(drc->xt.tree[ix].cache);
+	}
 	PTHREAD_MUTEX_destroy(&drc->mtx);
 	LogFullDebug(COMPONENT_DUPREQ, "free TCP drc %p", drc);
 	pool_free(tcp_drc_pool, drc);
@@ -722,9 +694,11 @@ static inline const nfs_function_desc_t *nfs_dupreq_func(dupreq_entry_t *dv)
 
 	if (dv->hin.rq_prog == nfs_param.core_param.program[P_NFS]) {
 		switch (dv->hin.rq_vers) {
+#ifdef _USE_NFS3
 		case NFS_V3:
 			func = &nfs3_func_desc[dv->hin.rq_proc];
 			break;
+#endif /* _USE_NFS3 */
 		case NFS_V4:
 			func = &nfs4_func_desc[dv->hin.rq_proc];
 			break;
@@ -749,12 +723,14 @@ static inline const nfs_function_desc_t *nfs_dupreq_func(dupreq_entry_t *dv)
 				 (int)dv->hin.rq_vers);
 			break;
 		}
+#ifdef _USE_NLM
 	} else if (dv->hin.rq_prog == nfs_param.core_param.program[P_NLM]) {
 		switch (dv->hin.rq_vers) {
 		case NLM4_VERS:
 			func = &nlm4_func_desc[dv->hin.rq_proc];
 			break;
 		}
+#endif /* _USE_NLM */
 	} else if (dv->hin.rq_prog == nfs_param.core_param.program[P_RQUOTA]) {
 		switch (dv->hin.rq_vers) {
 		case RQUOTAVERS:
@@ -786,15 +762,10 @@ static inline dupreq_entry_t *alloc_dupreq(void)
 {
 	dupreq_entry_t *dv;
 
-	dv = pool_alloc(dupreq_pool, NULL);
-	if (!dv) {
-		LogCrit(COMPONENT_DUPREQ, "alloc dupreq_entry_t failed");
-		goto out;
-	}
-	memset(dv, 0, sizeof(dupreq_entry_t));	/* XXX pool_zalloc */
+	dv = pool_alloc(dupreq_pool);
 	gsh_mutex_init(&dv->mtx, NULL);
 	TAILQ_INIT_ENTRY(dv, fifo_q);
-out:
+
 	return dv;
 }
 
@@ -835,7 +806,7 @@ static inline void nfs_dupreq_free_dupreq(dupreq_entry_t *dv)
  * @brief advance retwnd.
  *
  * If (drc)->retwnd is 0, advance its value to RETWND_START_BIAS, else
- * increase its value by 1.
+ * increase its value by 2 (corrects to 1) iff !full.
  *
  * @param[in] drc The duplicate request cache
  */
@@ -844,7 +815,8 @@ static inline void nfs_dupreq_free_dupreq(dupreq_entry_t *dv)
 		if ((drc)->retwnd == 0)				\
 			(drc)->retwnd = RETWND_START_BIAS;	\
 		else						\
-			++((drc)->retwnd);			\
+			if ((drc)->retwnd < (drc)->maxsize)	\
+				(drc)->retwnd += 2;		\
 	} while (0)
 
 /**
@@ -923,7 +895,7 @@ dupreq_status_t nfs_dupreq_start(nfs_request_t *reqnfs,
 				 struct svc_req *req)
 {
 	dupreq_status_t status = DUPREQ_SUCCESS;
-	dupreq_entry_t *dv, *dk = NULL;
+	dupreq_entry_t *dv = NULL, *dk = NULL;
 	bool release_dk = true;
 	nfs_res_t *res = NULL;
 	drc_t *drc;
@@ -973,11 +945,6 @@ dupreq_status_t nfs_dupreq_start(nfs_request_t *reqnfs,
 	}
 
 	dk = alloc_dupreq();
-	if (dk == NULL) {
-		release_dk = false;
-		status = DUPREQ_ERROR;
-		goto release_dk;
-	}
 
 	dk->hin.drc = drc;	/* trans. call path ref to dv */
 
@@ -1042,27 +1009,30 @@ dupreq_status_t nfs_dupreq_start(nfs_request_t *reqnfs,
 			PTHREAD_MUTEX_unlock(&dv->mtx);
 		} else {
 			/* new request */
-			res = req->rq_u2 = dk->res = alloc_nfs_res();
-			(void)rbtree_x_cached_insert(&drc->xt, t, &dk->rbt_k,
-						     dk->hk);
-			(dk->refcnt)++;
+			res = dk->res = req->rq_u2 = alloc_nfs_res();
+			req->rq_u1 = dk;
+			release_dk = false;
+			dv = dk;
+
+			/* cache--can exceed drc->maxsize */
+			(void)rbtree_x_cached_insert(&drc->xt, t,
+						&dk->rbt_k, dk->hk);
+			dk->refcnt = 1;
+
 			/* add to q tail */
 			PTHREAD_MUTEX_lock(&drc->mtx);
 			TAILQ_INSERT_TAIL(&drc->dupreq_q, dk, fifo_q);
 			++(drc->size);
 			PTHREAD_MUTEX_unlock(&drc->mtx);
-			req->rq_u1 = dk;
-			release_dk = false;
-			dv = dk;
 		}
 		PTHREAD_MUTEX_unlock(&t->mtx);
 	}
 
 	LogFullDebug(COMPONENT_DUPREQ,
-		     "starting dv=%p xid=%u on DRC=%p state=%s, status=%s, refcnt=%d",
-		     dv, dk->hin.tcp.rq_xid, drc,
-		     dupreq_state_table[dv->state], dupreq_status_table[status],
-		     dv->refcnt);
+		"starting dv=%p xid=%u on DRC=%p state=%s, status=%s, refcnt=%d, drc->size=%d",
+		dv, dk->hin.tcp.rq_xid, drc,
+		dupreq_state_table[dv->state], dupreq_status_table[status],
+		(dv) ? dv->refcnt : 0, drc->size);
 
  release_dk:
 	if (release_dk)
@@ -1109,6 +1079,7 @@ dupreq_status_t nfs_dupreq_finish(struct svc_req *req, nfs_res_t *res_nfs)
 	dupreq_status_t status = DUPREQ_SUCCESS;
 	struct rbtree_x_part *t;
 	drc_t *drc = NULL;
+	int16_t cnt = 0;
 
 	/* do nothing if req is marked no-cache */
 	if (dv == (void *)DUPREQ_NOCACHE)
@@ -1129,22 +1100,31 @@ dupreq_status_t nfs_dupreq_finish(struct svc_req *req, nfs_res_t *res_nfs)
 	PTHREAD_MUTEX_lock(&drc->mtx);
 
 	LogFullDebug(COMPONENT_DUPREQ,
-		     "completing dv=%p xid=%u on DRC=%p state=%s, status=%s, refcnt=%d",
-		     dv, dv->hin.tcp.rq_xid, drc,
-		     dupreq_state_table[dv->state], dupreq_status_table[status],
-		     dv->refcnt);
+		     "completing dv=%p xid=%u on DRC=%p state=%s, status=%s, refcnt=%d, drc->size=%d",
+		dv, dv->hin.tcp.rq_xid, drc,
+		dupreq_state_table[dv->state], dupreq_status_table[status],
+		dv->refcnt, drc->size);
 
-	/* ok, do the new retwnd calculation here.  then, put drc only if
-	 * we retire an entry */
+	/* (all) finished requests count against retwnd */
+	drc_dec_retwnd(drc);
+
+	/* conditionally retire entries */
+dq_again:
 	if (drc_should_retire(drc)) {
-		/* again: */
 		ov = TAILQ_FIRST(&drc->dupreq_q);
+dq_retry:
 		if (likely(ov)) {
-			/* finished request count against retwnd */
-			drc_dec_retwnd(drc);
-			/* check refcnt */
-			if (ov->refcnt > 0) {
+			/* quick check without partition lock */
+			if (unlikely(ov->refcnt > 0)) {
 				/* ov still in use, apparently */
+				if (cnt++ < DUPREQ_MAX_RETRIES) {
+					ov = TAILQ_NEXT(ov, fifo_q);
+					goto dq_retry;
+				}
+				LogWarn(COMPONENT_DUPREQ,
+					"DRC retire entries: unable to find reclaimable dupreq LRU entry after %d tries on DRC=%p, drc->size=%d",
+					DUPREQ_MAX_RETRIES, drc,
+					drc->size);
 				goto unlock;
 			}
 			/* remove q entry */
@@ -1167,6 +1147,12 @@ dupreq_status_t nfs_dupreq_finish(struct svc_req *req, nfs_res_t *res_nfs)
 
 			/* deep free ov */
 			nfs_dupreq_free_dupreq(ov);
+
+			/* conditionally retire another */
+			if (cnt++ < DUPREQ_MAX_RETRIES) {
+				PTHREAD_MUTEX_lock(&drc->mtx);
+				goto dq_again; /* calls drc_should_retire() */
+			}
 			goto out;
 		}
 	}

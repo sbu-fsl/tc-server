@@ -416,6 +416,33 @@ static const struct nfs4_op_desc optabv4[] = {
 				.funct = nfs4_op_write_same,
 				.free_res = nfs4_op_write_same_Free,
 				.exp_perm_flags = 0},
+	[NFS4_OP_CLONE] = {
+				.name = "OP_CLONE",
+				.funct = nfs4_op_notsupp,
+				.free_res = nfs4_op_notsupp_Free,
+				.exp_perm_flags = 0},
+
+	/* NFSv4.3 */
+	[NFS4_OP_GETXATTR] = {
+				.name = "OP_GETXATTR",
+				.funct = nfs4_op_getxattr,
+				.free_res = nfs4_op_getxattr_Free,
+				.exp_perm_flags = 0},
+	[NFS4_OP_SETXATTR] = {
+				.name = "OP_SETXATTR",
+				.funct = nfs4_op_setxattr,
+				.free_res = nfs4_op_setxattr_Free,
+				.exp_perm_flags = 0},
+	[NFS4_OP_LISTXATTR] = {
+				.name = "OP_LISTXATTR",
+				.funct = nfs4_op_listxattr,
+				.free_res = nfs4_op_listxattr_Free,
+				.exp_perm_flags = 0},
+	[NFS4_OP_REMOVEXATTR] = {
+				.name = "OP_REMOVEXATTR",
+				.funct = nfs4_op_removexattr,
+				.free_res = nfs4_op_removexattr_Free,
+				.exp_perm_flags = 0},
 };
 
 /** Define the last valid NFS v4 op for each minor version.
@@ -424,7 +451,7 @@ static const struct nfs4_op_desc optabv4[] = {
 nfs_opnum4 LastOpcode[] = {
 	NFS4_OP_RELEASE_LOCKOWNER,
 	NFS4_OP_RECLAIM_COMPLETE,
-	NFS4_OP_WRITE_SAME
+	NFS4_OP_REMOVEXATTR
 };
 
 /**
@@ -463,6 +490,7 @@ int nfs4_Compound(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 	struct timespec ts;
 	int perm_flags;
 	char *tagname = NULL;
+	char *notag = "NO TAG";
 
 	if (compound4_minor > 2) {
 		LogCrit(COMPONENT_NFS_V4, "Bad Minor Version %d",
@@ -481,9 +509,6 @@ int nfs4_Compound(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 		res->res_compound4.tag.utf8string_val =
 		    gsh_malloc(res->res_compound4.tag.utf8string_len + 1);
 
-		if (!res->res_compound4.tag.utf8string_val)
-			return NFS_REQ_DROP;
-
 		memcpy(res->res_compound4.tag.utf8string_val,
 		       arg->arg_compound4.tag.utf8string_val,
 		       res->res_compound4.tag.utf8string_len);
@@ -501,11 +526,18 @@ int nfs4_Compound(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 			res->res_compound4.resarray.resarray_len = 0;
 			return NFS_REQ_OK;
 		}
-		gsh_free(tagname);
-
 	} else {
 		res->res_compound4.tag.utf8string_val = NULL;
+		tagname = notag;
 	}
+
+	/* Managing the operation list */
+	LogDebug(COMPONENT_NFS_V4,
+		 "COMPOUND: There are %d operations, res = %p, tag = %s",
+		 argarray_len, res, tagname);
+
+	if (tagname != notag)
+		gsh_free(tagname);
 
 	/* Check for empty COMPOUND request */
 	if (argarray_len == 0) {
@@ -518,6 +550,7 @@ int nfs4_Compound(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 	}
 
 	/* Check for too long request */
+	//Farhaan changed 100 to 256
 	if (argarray_len > 256) {
 		LogMajor(COMPONENT_NFS_V4,
 			 "A COMPOUND with too many operations (%d) was received",
@@ -548,16 +581,8 @@ int nfs4_Compound(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 	res->res_compound4.resarray.resarray_val =
 		gsh_calloc(argarray_len, sizeof(struct nfs_resop4));
 
-	if (res->res_compound4.resarray.resarray_val == NULL)
-		return NFS_REQ_DROP;
-
 	res->res_compound4.resarray.resarray_len = argarray_len;
 	resarray = res->res_compound4.resarray.resarray_val;
-
-	/* Managing the operation list */
-	LogDebug(COMPONENT_NFS_V4,
-		 "COMPOUND: There are %d operations",
-		 argarray_len);
 
 	/* Manage errors NFS4ERR_OP_NOT_IN_SESSION and NFS4ERR_NOT_ONLY_OP.
 	 * These checks apply only to 4.1 */
@@ -706,7 +731,7 @@ int nfs4_Compound(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 				break;
 			}
 		}
-
+		LogCrit(COMPONENT_NFS_V4, "Before call. Opcode = %d", opcode);
 		status = (optabv4[opcode].funct) (&argarray[i],
 						  &data,
 						  &resarray[i]);
@@ -718,14 +743,13 @@ int nfs4_Compound(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 		 */
 		resarray[i].nfs_resop4_u.opaccess.status = status;
 
-		server_stats_nfsv4_op_done(opcode,
-					   op_start_time, status == NFS4_OK);
+		server_stats_nfsv4_op_done(opcode, op_start_time, status);
 
 		if (status != NFS4_OK) {
 			/* An error occured, we do not manage the other requests
 			 * in the COMPOUND, this may be a regular behavior
 			 */
-			LogDebug(COMPONENT_NFS_V4,
+			LogCrit(COMPONENT_NFS_V4,
 				 "Status of %s in position %d = %s",
 				 optabv4[opcode].name, i,
 				 nfsstat4_to_str(status));
@@ -736,7 +760,7 @@ int nfs4_Compound(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 		}
 
 		/* Check Req size */
-
+		LogCrit(COMPONENT_NFS_V4, "After successful call");
 		/* NFS_V4.1 specific stuff */
 		if (data.use_drc) {
 			/* Replay cache, only true for SEQUENCE or
@@ -757,7 +781,7 @@ int nfs4_Compound(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 			break;	/* Exit the for loop */
 		}
 	}			/* for */
-
+	LogDebug(COMPONENT_NFS_V4, "After for loop");
 	server_stats_compound_done(argarray_len, status);
 
 	/* Complete the reply, in particular, tell where you stopped if
@@ -804,6 +828,7 @@ int nfs4_Compound(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 			 nfsstat4_to_str(status), i);
 
 	compound_data_Free(&data);
+	LogCrit(COMPONENT_NFS_V4, "Returning");
 
 	return NFS_REQ_OK;
 }				/* nfs4_Compound */
@@ -884,11 +909,14 @@ void nfs4_Compound_Free(nfs_res_t *res)
 void compound_data_Free(compound_data_t *data)
 {
 	/* Release refcounted cache entries */
-	if (data->current_entry)
-		cache_inode_put(data->current_entry);
-
-	if (data->saved_entry)
-		cache_inode_put(data->saved_entry);
+	if (data->current_obj) {
+		set_current_entry(data, NULL);
+		data->current_obj = NULL;
+	}
+	if (data->saved_obj) {
+		set_saved_entry(data, NULL);
+		data->saved_obj = NULL;
+	}
 
 	if (data->current_ds) {
 		ds_handle_put(data->current_ds);
@@ -906,9 +934,9 @@ void compound_data_Free(compound_data_t *data)
 	}
 
 	/* Release CurrentFH reference to export. */
-	if (op_ctx->export) {
-		put_gsh_export(op_ctx->export);
-		op_ctx->export = NULL;
+	if (op_ctx->ctx_export) {
+		put_gsh_export(op_ctx->ctx_export);
+		op_ctx->ctx_export = NULL;
 		op_ctx->fsal_export = NULL;
 	}
 
@@ -1052,6 +1080,14 @@ void nfs4_Compound_CopyResOne(nfs_resop4 *res_dst, nfs_resop4 *res_src)
 	case NFS4_OP_READ_PLUS:
 	case NFS4_OP_SEEK:
 	case NFS4_OP_WRITE_SAME:
+	case NFS4_OP_CLONE:
+
+	/* NFSv4.3 */
+	case NFS4_OP_GETXATTR:
+	case NFS4_OP_SETXATTR:
+	case NFS4_OP_LISTXATTR:
+	case NFS4_OP_REMOVEXATTR:
+
 	case NFS4_OP_LAST_ONE:
 		break;
 

@@ -37,52 +37,33 @@
 #include "log.h"
 #include "sal_functions.h"
 #include "sal_data.h"
-#include "cache_inode_lru.h"
 #include "idmapper.h"
 #include "delayed_exec.h"
 #include "export_mgr.h"
 #include "fsal.h"
+#include "netgroup_cache.h"
 #ifdef USE_DBUS
 #include "gsh_dbus.h"
 #endif
 
-struct glist_head temp_exportlist;
-
 /**
- * @brief Mutex protecting command and status
+ * @brief Mutex protecting shutdown flag.
  */
 
 static pthread_mutex_t admin_control_mtx = PTHREAD_MUTEX_INITIALIZER;
 
 /**
- * @brief Condition variable on which commands and states are
- * signalled.
+ * @brief Condition variable to signal change in shutdown flag.
  */
 
 static pthread_cond_t admin_control_cv = PTHREAD_COND_INITIALIZER;
 
 /**
- * @brief Commands issued to the admin thread
+ * @brief Flag to indicate shutdown Ganesha.
+ *
+ * Protected by admin_control_mtx and signaled by admin_control_cv.
  */
-
-typedef enum {
-	admin_none_pending,	/*< No command.  The admin thread sets this on
-				   startup and after */
-	admin_shutdown		/*< Shut down Ganesha */
-} admin_command_t;
-
-/**
- * @brief Current state of the admin thread
- */
-
-typedef enum {
-	admin_stable,		/*< The admin thread is not doing an action. */
-	admin_shutting_down,	/*< The admin thread is shutting down Ganesha */
-	admin_halted		/*< All threads should exit. */
-} admin_status_t;
-
-static admin_command_t admin_command;
-static admin_status_t admin_status;
+static bool admin_shutdown;
 
 #ifdef USE_DBUS
 
@@ -268,11 +249,48 @@ static struct gsh_dbus_method method_purge_gids = {
 		 END_ARG_LIST}
 };
 
+/**
+ * @brief Dbus method for flushing netgroup cache
+ *
+ * @param[in]  args
+ * @param[out] reply
+ */
+static bool admin_dbus_purge_netgroups(DBusMessageIter *args,
+				       DBusMessage *reply,
+				       DBusError *error)
+{
+	char *errormsg = "Purge netgroup cache";
+	bool success = true;
+	DBusMessageIter iter;
+
+	dbus_message_iter_init_append(reply, &iter);
+	if (args != NULL) {
+		errormsg = "Purge netgroup takes no arguments.";
+		success = false;
+		LogWarn(COMPONENT_DBUS, "%s", errormsg);
+		goto out;
+	}
+
+	ng_clear_cache();
+
+ out:
+	dbus_status_reply(&iter, success, errormsg);
+	return success;
+}
+
+static struct gsh_dbus_method method_purge_netgroups = {
+	.name = "purge_netgroups",
+	.method = admin_dbus_purge_netgroups,
+	.args = {STATUS_REPLY,
+		 END_ARG_LIST}
+};
+
 static struct gsh_dbus_method *admin_methods[] = {
 	&method_shutdown,
 	&method_grace_period,
 	&method_get_grace,
 	&method_purge_gids,
+	&method_purge_netgroups,
 	NULL
 };
 
@@ -309,38 +327,10 @@ static struct gsh_dbus_interface *admin_interfaces[] = {
 
 void nfs_Init_admin_thread(void)
 {
-	admin_command = admin_none_pending;
-	admin_status = admin_stable;
 #ifdef USE_DBUS
 	gsh_dbus_register_path("admin", admin_interfaces);
 #endif				/* USE_DBUS */
 	LogEvent(COMPONENT_NFS_CB, "Admin thread initialized");
-}
-
-static void admin_issue_command(admin_command_t command)
-{
-	PTHREAD_MUTEX_lock(&admin_control_mtx);
-	while ((admin_command != admin_none_pending)
-	       && ((admin_status != admin_stable)
-		   || (admin_status != admin_halted))) {
-		pthread_cond_wait(&admin_control_cv, &admin_control_mtx);
-	}
-	if (admin_status == admin_halted) {
-		PTHREAD_MUTEX_unlock(&admin_control_mtx);
-		return;
-	}
-	admin_command = command;
-	pthread_cond_broadcast(&admin_control_cv);
-	PTHREAD_MUTEX_unlock(&admin_control_mtx);
-}
-
-/**
- * @brief Signal the admin thread to replace the exports
- */
-
-void admin_replace_exports(void)
-{
-	admin_issue_command(admin_command);
 }
 
 /**
@@ -349,7 +339,14 @@ void admin_replace_exports(void)
 
 void admin_halt(void)
 {
-	admin_issue_command(admin_shutdown);
+	PTHREAD_MUTEX_lock(&admin_control_mtx);
+
+	if (!admin_shutdown) {
+		admin_shutdown = true;
+		pthread_cond_broadcast(&admin_control_cv);
+	}
+
+	PTHREAD_MUTEX_unlock(&admin_control_mtx);
 }
 
 static void do_shutdown(void)
@@ -432,17 +429,6 @@ static void do_shutdown(void)
 		LogEvent(COMPONENT_THREAD, "Reaper thread shut down.");
 	}
 
-	LogEvent(COMPONENT_MAIN, "Stopping LRU thread.");
-	rc = cache_inode_lru_pkgshutdown();
-	if (rc != 0) {
-		LogMajor(COMPONENT_THREAD,
-			 "Error shutting down LRU thread: %d",
-			 rc);
-		disorderly = true;
-	} else {
-		LogEvent(COMPONENT_THREAD, "LRU thread system shut down.");
-	}
-
 	LogEvent(COMPONENT_MAIN, "Removing all exports.");
 	remove_all_exports();
 
@@ -455,9 +441,6 @@ static void do_shutdown(void)
 		   potentially invalid locks. */
 		emergency_cleanup_fsals();
 	} else {
-		LogEvent(COMPONENT_MAIN, "Destroying the inode cache.");
-		cache_inode_destroyer();
-		LogEvent(COMPONENT_MAIN, "Inode cache destroyed.");
 
 		LogEvent(COMPONENT_MAIN, "Destroying the FSAL system.");
 		destroy_fsals();
@@ -472,21 +455,15 @@ void *admin_thread(void *UnusedArg)
 	SetNameFunction("Admin");
 
 	PTHREAD_MUTEX_lock(&admin_control_mtx);
-	while (admin_command != admin_shutdown) {
-		if (admin_command != admin_none_pending)
-			continue;
+
+	while (!admin_shutdown) {
+		/* Wait for shutdown indication. */
 		pthread_cond_wait(&admin_control_cv, &admin_control_mtx);
 	}
 
-	admin_command = admin_none_pending;
-	admin_status = admin_shutting_down;
-	pthread_cond_broadcast(&admin_control_cv);
-	PTHREAD_MUTEX_unlock(&admin_control_mtx);
-	do_shutdown();
-	PTHREAD_MUTEX_lock(&admin_control_mtx);
-	admin_status = admin_halted;
-	pthread_cond_broadcast(&admin_control_cv);
 	PTHREAD_MUTEX_unlock(&admin_control_mtx);
 
+	do_shutdown();
+
 	return NULL;
-}				/* admin_thread */
+}

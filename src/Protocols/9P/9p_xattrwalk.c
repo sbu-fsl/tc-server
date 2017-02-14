@@ -41,8 +41,6 @@
 #include <sys/xattr.h>
 #include "nfs_core.h"
 #include "log.h"
-#include "cache_inode.h"
-#include "cache_inode_lru.h"
 #include "fsal.h"
 #include "9p.h"
 
@@ -103,29 +101,25 @@ int _9p_xattrwalk(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 	}
 
 	pxattrfid = gsh_calloc(1, sizeof(struct _9p_fid));
-	if (pxattrfid == NULL)
-		return _9p_rerror(req9p, msgtag, ENOMEM, plenout, preply);
 
 	/* set op_ctx, it will be useful if FSAL is later called */
 	_9p_init_opctx(pfid, req9p);
 
-	/* Initiate xattr's fid by copying file's fid in it */
+	/* Initiate xattr's fid by copying file's fid in it.
+	 * Don't copy the state_t pointer.
+	 */
 	memcpy((char *)pxattrfid, (char *)pfid, sizeof(struct _9p_fid));
+	pxattrfid->state = NULL;
 
 	snprintf(name, MAXNAMLEN, "%.*s", *name_len, name_str);
 
 	pxattrfid->specdata.xattr.xattr_content = gsh_malloc(XATTR_BUFFERSIZE);
-	if (pxattrfid->specdata.xattr.xattr_content == NULL) {
-		gsh_free(pxattrfid);
-		return _9p_rerror(req9p, msgtag, ENOMEM, plenout, preply);
-	}
 
 	if (*name_len == 0) {
 		/* xattrwalk is used with an empty name,
 		 * this is a listxattr request */
 		fsal_status =
-		    pxattrfid->pentry->obj_handle->obj_ops.list_ext_attrs(
-			pxattrfid->pentry->obj_handle,
+		    pxattrfid->pentry->obj_ops.list_ext_attrs(pxattrfid->pentry,
 			FSAL_XATTR_RW_COOKIE,	/* Start with RW cookie,
 						 * hiding RO ones */
 			 xattrs_arr,
@@ -137,9 +131,8 @@ int _9p_xattrwalk(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 			gsh_free(pxattrfid->specdata.xattr.xattr_content);
 			gsh_free(pxattrfid);
 			return _9p_rerror(req9p, msgtag,
-					  _9p_tools_errno
-					  (cache_inode_error_convert
-					   (fsal_status)), plenout, preply);
+					  _9p_tools_errno(fsal_status), plenout,
+					  preply);
 		}
 
 		/* if all xattrent are not read,
@@ -174,8 +167,8 @@ int _9p_xattrwalk(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 	} else {
 		/* xattrwalk has a non-empty name, use regular setxattr */
 		fsal_status =
-		    pxattrfid->pentry->obj_handle->obj_ops.
-		    getextattr_id_by_name(pxattrfid->pentry->obj_handle,
+		    pxattrfid->pentry->obj_ops.getextattr_id_by_name(
+					  pxattrfid->pentry,
 					  name,
 					  &pxattrfid->specdata.xattr.xattr_id);
 
@@ -190,15 +183,13 @@ int _9p_xattrwalk(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 						  plenout, preply);
 			else
 				return _9p_rerror(req9p, msgtag,
-						  _9p_tools_errno
-						  (cache_inode_error_convert
-						   (fsal_status)), plenout,
-						  preply);
+						  _9p_tools_errno(fsal_status),
+						  plenout, preply);
 		}
 
 		fsal_status =
-		    pxattrfid->pentry->obj_handle->obj_ops.
-		    getextattr_value_by_name(pxattrfid->pentry->obj_handle,
+		    pxattrfid->pentry->obj_ops.getextattr_value_by_name(
+					     pxattrfid->pentry,
 					     name,
 					     pxattrfid->specdata.xattr.
 					     xattr_content, XATTR_BUFFERSIZE,
@@ -217,13 +208,18 @@ int _9p_xattrwalk(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 	req9p->pconn->fids[*attrfid] = pxattrfid;
 
 	/* Increments refcount as we're manually making a new copy */
-	(void) cache_inode_lru_ref(pfid->pentry, LRU_REQ_STALE_OK);
+	pfid->pentry->obj_ops.get_ref(pfid->pentry);
 
 	/* hold reference on gdata */
 	uid2grp_hold_group_data(pxattrfid->gdata);
 
 	get_gsh_export_ref(pfid->export);
 	get_9p_user_cred_ref(pfid->ucred);
+
+	if (pxattrfid->ppentry != NULL) {
+		/* Increments refcount for ppentry */
+		pxattrfid->ppentry->obj_ops.get_ref(pxattrfid->ppentry);
+	}
 
 	/* Build the reply */
 	_9p_setinitptr(cursor, preply, _9P_RXATTRWALK);

@@ -40,7 +40,6 @@
 #include "nfs_convert.h"
 #include "nfs_file_handle.h"
 #include "sal_functions.h"
-
 /**
  * @brief The NFS4_OP_COPY operation
  *
@@ -58,14 +57,15 @@ int nfs4_op_copy(struct nfs_argop4 *op, compound_data_t *data,
                  struct nfs_resop4 *resp) {
 	COPY4args *const arg_COPY4 = &op->nfs_argop4_u.opcopy;
 	COPY4res *const res_COPY4 = &resp->nfs_resop4_u.opcopy;
-	cache_entry_t *dst_entry = NULL;
-	cache_entry_t *src_entry = NULL;
-	cache_inode_status_t cache_status = CACHE_INODE_SUCCESS;
+	struct fsal_obj_handle *dst_handle = NULL;
+	struct fsal_obj_handle *src_handle = NULL;
 	size_t copied = 0;
 	struct gsh_buffdesc verf_desc;
+	fsal_status_t fsal_status;
 
+	LogDebug(COMPONENT_FSAL, "Entered nfs4_op_copy. Sizeof COPY4args, COPY4res, nfs_argop4, nfs_resop4 = %ld, %ld, %ld, %ld", sizeof(COPY4args), sizeof(COPY4res), sizeof(nfs_argop4), sizeof(nfs_resop4));
 	resp->resop = NFS4_OP_COPY;
-	res_COPY4->cr_status = NFS4_OK;
+	res_COPY4->cr_status = 0;
 
 	/* Do basic checks on a filehandle */
 	res_COPY4->cr_status = nfs4_sanity_check_FH(data, REGULAR_FILE, false);
@@ -82,19 +82,20 @@ int nfs4_op_copy(struct nfs_argop4 *op, compound_data_t *data,
 		goto out;
 	}
 
-	dst_entry = data->current_entry;
-	src_entry = data->saved_entry;
+	dst_handle = data->current_obj;
+	src_handle = data->saved_obj;
 	/* RFC: "SAVED_FH and CURRENT_FH must be different files." */
-	if (src_entry == dst_entry) {
+	if (src_handle == dst_handle) {
 		res_COPY4->cr_status = NFS4ERR_INVAL;
 		goto out;
 	}
 
-	cache_status = cache_inode_copy(src_entry, arg_COPY4->ca_src_offset,
-					dst_entry, arg_COPY4->ca_dst_offset,
+	fsal_status = fsal_copy(src_handle, arg_COPY4->ca_src_offset,
+					dst_handle, arg_COPY4->ca_dst_offset,
 					arg_COPY4->ca_count, &copied);
-	if (cache_status != CACHE_INODE_SUCCESS) {
-		res_COPY4->cr_status = nfs4_Errno(cache_status);
+	if (FSAL_IS_ERROR(fsal_status)) {
+		LogDebug(COMPONENT_FSAL, "Error in fsal_copy");
+		res_COPY4->cr_status = nfs4_Errno_status(fsal_status);
 		goto out;
 	}
 
@@ -106,9 +107,10 @@ int nfs4_op_copy(struct nfs_argop4 *op, compound_data_t *data,
 
 	verf_desc.addr = &res_COPY4->COPY4res_u.cr_resok4.wr_writeverf;
 	verf_desc.len = sizeof(verifier4);
-	op_ctx->fsal_export->exp_ops.get_write_verifier(&verf_desc);
+	op_ctx->fsal_export->exp_ops.get_write_verifier(op_ctx->fsal_export, &verf_desc);
 
 out:
+	LogDebug(COMPONENT_FSAL, "Exited nfs4_op_copy. retval = %d", res_COPY4->cr_status);
 	return res_COPY4->cr_status;
 }
 

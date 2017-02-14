@@ -816,19 +816,44 @@ fsal_check_access_no_acl(struct user_cred *creds,
 fsal_status_t fsal_test_access(struct fsal_obj_handle *obj_hdl,
 			       fsal_accessflags_t access_type,
 			       fsal_accessflags_t *allowed,
-			       fsal_accessflags_t *denied)
+			       fsal_accessflags_t *denied,
+			       bool owner_skip)
 {
-	if (IS_FSAL_ACE4_REQ(access_type) ||
-	    (obj_hdl->attrs->acl && IS_FSAL_ACE4_MASK_VALID(access_type))) {
-		return fsal_check_access_acl(op_ctx->creds,
-					     FSAL_ACE4_MASK(access_type),
-					     allowed, denied, obj_hdl->attrs);
-	} else {		/* fall back to use mode to check access. */
-		return fsal_check_access_no_acl(op_ctx->creds,
-						FSAL_MODE_MASK(access_type),
-						allowed, denied,
-						obj_hdl->attrs);
+	struct attrlist attrs;
+	fsal_status_t status;
+
+	fsal_prepare_attrs(&attrs,
+			   op_ctx->fsal_export->
+				exp_ops.fs_supported_attrs(op_ctx->fsal_export)
+			   & (ATTRS_CREDS | ATTR_MODE | ATTR_ACL));
+
+	status = obj_hdl->obj_ops.getattrs(obj_hdl, &attrs);
+
+	if (FSAL_IS_ERROR(status))
+		goto out;
+
+	if (owner_skip && attrs.owner == op_ctx->creds->caller_uid) {
+		status = fsalstat(ERR_FSAL_NO_ERROR, 0);
+		goto out;
 	}
+
+	if (IS_FSAL_ACE4_REQ(access_type) ||
+	    (attrs.acl != NULL && IS_FSAL_ACE4_MASK_VALID(access_type))) {
+		status = fsal_check_access_acl(op_ctx->creds,
+					       FSAL_ACE4_MASK(access_type),
+					       allowed, denied, &attrs);
+	} else {		/* fall back to use mode to check access. */
+		status = fsal_check_access_no_acl(op_ctx->creds,
+						  FSAL_MODE_MASK(access_type),
+						  allowed, denied, &attrs);
+	}
+
+ out:
+
+	/* Done with the attrs */
+	fsal_release_attrs(&attrs);
+
+	return status;
 }
 
 uid_t ganesha_uid;
@@ -856,10 +881,7 @@ void fsal_save_ganesha_credentials(void)
 	ganesha_ngroups = getgroups(0, NULL);
 	if (ganesha_ngroups > 0) {
 		ganesha_groups = gsh_malloc(ganesha_ngroups * sizeof(gid_t));
-		if (ganesha_groups == NULL) {
-			LogFatal(COMPONENT_FSAL,
-				 "Could not allocate memory for Ganesha group list");
-		}
+
 		if (getgroups(ganesha_ngroups, ganesha_groups) !=
 		    ganesha_ngroups) {
 			LogFatal(COMPONENT_FSAL,

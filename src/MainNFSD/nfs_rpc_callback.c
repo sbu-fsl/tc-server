@@ -56,6 +56,18 @@
 #include "sal_data.h"
 #include <misc/timespec.h>
 
+const struct __netid_nc_table netid_nc_table[9] = {
+	{
+	"-", 1, _NC_ERR, 0}, {
+	"tcp", 3, _NC_TCP, AF_INET}, {
+	"tcp6", 4, _NC_TCP6, AF_INET6}, {
+	"rdma", 4, _NC_RDMA, AF_INET}, {
+	"rdma6", 5, _NC_RDMA6, AF_INET6}, {
+	"sctp", 4, _NC_SCTP, AF_INET}, {
+	"sctp6", 5, _NC_SCTP6, AF_INET6}, {
+	"udp", 3, _NC_UDP, AF_INET}, {
+	"udp6", 4, _NC_UDP6, AF_INET6},};
+
 /* forward declaration in lieu of moving code */
 static void _nfs_rpc_destroy_chan(rpc_call_channel_t *chan);
 
@@ -133,37 +145,37 @@ void nfs_rpc_cb_pkgshutdown(void)
 
 nc_type nfs_netid_to_nc(const char *netid)
 {
-	if (!strncmp(netid, netid_nc_table[_NC_TCP].netid,
-		     netid_nc_table[_NC_TCP].netid_len))
-		return _NC_TCP;
-
 	if (!strncmp(netid, netid_nc_table[_NC_TCP6].netid,
 		     netid_nc_table[_NC_TCP6].netid_len))
 		return _NC_TCP6;
 
-	if (!strncmp(netid, netid_nc_table[_NC_UDP].netid,
-		     netid_nc_table[_NC_UDP].netid_len))
-		return _NC_UDP;
+	if (!strncmp(netid, netid_nc_table[_NC_TCP].netid,
+		     netid_nc_table[_NC_TCP].netid_len))
+		return _NC_TCP;
 
 	if (!strncmp(netid, netid_nc_table[_NC_UDP6].netid,
 		     netid_nc_table[_NC_UDP6].netid_len))
 		return _NC_UDP6;
 
-	if (!strncmp(netid, netid_nc_table[_NC_RDMA].netid,
-		     netid_nc_table[_NC_RDMA].netid_len))
-		return _NC_RDMA;
+	if (!strncmp(netid, netid_nc_table[_NC_UDP].netid,
+		     netid_nc_table[_NC_UDP].netid_len))
+		return _NC_UDP;
 
 	if (!strncmp(netid, netid_nc_table[_NC_RDMA6].netid,
 		     netid_nc_table[_NC_RDMA6].netid_len))
 		return _NC_RDMA6;
 
-	if (!strncmp(netid, netid_nc_table[_NC_SCTP].netid,
-		     netid_nc_table[_NC_SCTP].netid_len))
-		return _NC_SCTP;
+	if (!strncmp(netid, netid_nc_table[_NC_RDMA].netid,
+		     netid_nc_table[_NC_RDMA].netid_len))
+		return _NC_RDMA;
 
 	if (!strncmp(netid, netid_nc_table[_NC_SCTP6].netid,
 		     netid_nc_table[_NC_SCTP6].netid_len))
 		return _NC_SCTP6;
+
+	if (!strncmp(netid, netid_nc_table[_NC_SCTP].netid,
+		     netid_nc_table[_NC_SCTP].netid_len))
+		return _NC_SCTP;
 
 	return _NC_ERR;
 }
@@ -900,10 +912,7 @@ static inline void free_resop(nfs_cb_resop4 *op)
 
 rpc_call_t *alloc_rpc_call(void)
 {
-	request_data_t *reqdata = pool_alloc(request_pool, NULL);
-
-	if (reqdata == NULL)
-		return NULL;
+	request_data_t *reqdata = pool_alloc(request_pool);
 
 	reqdata->rtype = NFS_CALL;
 	return &reqdata->r_u.call;
@@ -1082,9 +1091,6 @@ static rpc_call_t *construct_single_call(nfs41_session_t *session,
 	nfs_cb_argop4 sequenceop;
 	CB_SEQUENCE4args *sequence = &sequenceop.nfs_cb_argop4_u.opcbsequence;
 
-	if (!call)
-		return NULL;
-
 	call->chan = &session->cb_chan;
 	cb_compound_init_v4(&call->cbt, 2,
 			    session->clientid_record->cid_minorversion, 0, NULL,
@@ -1099,20 +1105,13 @@ static rpc_call_t *construct_single_call(nfs41_session_t *session,
 	sequence->csa_highest_slotid = highest_slot;
 	sequence->csa_cachethis = false;
 	if (refer) {
-		referring_call_list4 *list =
-		    gsh_calloc(1, sizeof(referring_call_list4));
+		referring_call_list4 *list;
 		referring_call4 *ref_call = NULL;
 
-		if (!list) {
-			free_rpc_call(call);
-			return NULL;
-		}
+		list = gsh_calloc(1, sizeof(referring_call_list4));
+
 		ref_call = gsh_malloc(sizeof(referring_call4));
-		if (!ref_call) {
-			gsh_free(list);
-			free_rpc_call(call);
-			return NULL;
-		}
+
 		sequence->
 		    csa_referring_call_lists.csa_referring_call_lists_len = 1;
 		sequence->
@@ -1297,22 +1296,17 @@ int nfs_rpc_v41_single(nfs_client_id_t *clientid, nfs_cb_argop4 *op,
 			rpc_call_t *call = NULL;
 			int code = 0;
 
-			if (!
-			    (find_cb_slot
-			     (session, scan == 1, &slot, &highest_slot))) {
+			if (!(find_cb_slot(session, scan == 1, &slot,
+					   &highest_slot))) {
 				continue;
 			}
-			call =
-			    construct_single_call(session, op, refer, slot,
-						  highest_slot);
-			if (!call) {
-				release_cb_slot(session, slot, false);
-				return ENOMEM;
-			}
+
+			call = construct_single_call(session, op, refer, slot,
+						     highest_slot);
+
 			call->call_hook = completion;
-			code =
-			    nfs_rpc_submit_call(call, completion_arg,
-						NFS_RPC_FLAG_NONE);
+			code = nfs_rpc_submit_call(call, completion_arg,
+						   NFS_RPC_FLAG_NONE);
 			if (code != 0) {
 				/* Clean up... */
 				free_single_call(call);

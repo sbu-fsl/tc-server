@@ -12,6 +12,7 @@ SET(fsalvfs_LIB_SRCS
    ../xattrs.c
    ../vfs_methods.h
    ../splice_copy.c
+   ../state.c
    subfsal_vfs.c
   )
 

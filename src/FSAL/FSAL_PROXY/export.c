@@ -32,6 +32,7 @@
 #include "pxy_fsal_methods.h"
 #include "nfs_exports.h"
 #include "export_mgr.h"
+#include "mdcache.h"
 
 static void pxy_release(struct fsal_export *exp_hdl)
 {
@@ -162,16 +163,12 @@ fsal_status_t pxy_create_export(struct fsal_module *fsal_hdl,
 	struct pxy_fsal_module *pxy =
 	    container_of(fsal_hdl, struct pxy_fsal_module, module);
 
-	if (!exp)
-		return fsalstat(ERR_FSAL_NOMEM, ENOMEM);
-	if (fsal_export_init(&exp->exp) != 0) {
-		gsh_free(exp);
-		return fsalstat(ERR_FSAL_NOMEM, ENOMEM);
-	}
+	fsal_export_init(&exp->exp);
 	pxy_export_ops_init(&exp->exp.exp_ops);
-	exp->exp.up_ops = up_ops;
 	exp->info = &pxy->special;
 	exp->exp.fsal = fsal_hdl;
+	exp->exp.up_ops = up_ops;
 	op_ctx->fsal_export = &exp->exp;
+
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }

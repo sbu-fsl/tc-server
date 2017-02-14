@@ -160,7 +160,8 @@ typedef struct gsh_xprt_private {
 static inline gsh_xprt_private_t *alloc_gsh_xprt_private(SVCXPRT *xprt,
 							 uint32_t flags)
 {
-	gsh_xprt_private_t *xu = gsh_malloc(sizeof(gsh_xprt_private_t));
+	gsh_xprt_private_t *xu = (gsh_xprt_private_t *)
+		gsh_malloc(sizeof(gsh_xprt_private_t));
 
 	xu->xprt = xprt;
 	xu->flags = flags;
@@ -187,7 +188,7 @@ static inline void gsh_xprt_ref(SVCXPRT *xprt, uint32_t flags,
 				const int line)
 {
 	if (flags & XPRT_PRIVATE_FLAG_INCREQ)
-		atomic_inc_uint32_t(&xprt->xp_requests);
+		(void) atomic_inc_uint32_t(&xprt->xp_requests);
 
 	SVC_REF2(xprt, flags, tag, line);
 	/* !LOCKED */
@@ -207,7 +208,7 @@ static inline void gsh_xprt_unref(SVCXPRT *xprt, uint32_t flags,
 		xprt, xprt->xp_requests, xprt->xp_refs, tag, line);
 
 	if (flags & XPRT_PRIVATE_FLAG_DECREQ)
-		atomic_dec_uint32_t(&xprt->xp_requests);
+		(void) atomic_dec_uint32_t(&xprt->xp_requests);
 
 	if (flags & XPRT_PRIVATE_FLAG_DECODING) {
 		gsh_xprt_private_t *xu = (gsh_xprt_private_t *) xprt->xp_u1;
@@ -217,13 +218,13 @@ static inline void gsh_xprt_unref(SVCXPRT *xprt, uint32_t flags,
 						   XPRT_PRIVATE_FLAG_DECODING);
 	}
 
-	SVC_RELEASE2(xprt, flags, tag, line);
-	/* !LOCKED */
-
 	LogFullDebugAlt(COMPONENT_DISPATCH, COMPONENT_RPC,
-		"xprt %p postrelease xp_requests=%" PRIu32 " xp_refs=%" PRIu32
+		"xprt %p prerelease xp_requests=%" PRIu32 " xp_refs=%" PRIu32
 		" tag=%s line=%d",
 		xprt, xprt->xp_requests, xprt->xp_refs, tag, line);
+
+	SVC_RELEASE2(xprt, flags, tag, line);
+	/* !LOCKED */
 }
 
 static inline bool gsh_xprt_decoder_guard(SVCXPRT *xprt, uint32_t flags)
@@ -286,29 +287,6 @@ do {									\
 	}								\
 } while (0)
 
-/* For the special case of SLOCK taken from a dispatcher thread */
-#define DISP_SLOCK2(x)						\
-do {								\
-	if (!slocked) {						\
-		if (!(rlocked && ((x)->xp_type == XPRT_UDP))) {	\
-			SVC_LOCK((x), XP_LOCK_SEND, __func__,	\
-				 __LINE__);			\
-		}						\
-		slocked = true;					\
-	}							\
-} while (0)
-
-#define DISP_SUNLOCK2(x)						\
-do {									\
-	if (slocked) {							\
-		if (!(((x)->xp_type == XPRT_UDP) && !rlocked)) {	\
-			SVC_UNLOCK((x), XP_LOCK_SEND, __func__,		\
-				   __LINE__);				\
-		}							\
-		slocked = false;					\
-	}								\
-} while (0)
-
 #define DISP_RLOCK(x)							\
 do {									\
 	if (!rlocked) {							\
@@ -329,7 +307,7 @@ bool copy_xprt_addr(sockaddr_t *, SVCXPRT *);
 
 int display_sockaddr(struct display_buffer *dspbuf, sockaddr_t *addr);
 
-static inline void sprint_sockaddr(sockaddr_t *addr, char *buf, int len)
+static inline void sprint_sockaddr(sockaddr_t *addr, char *buf, size_t len)
 {
 	struct display_buffer dspbuf = {len, buf, buf};
 

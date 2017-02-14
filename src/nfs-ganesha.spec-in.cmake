@@ -51,31 +51,16 @@ Requires: sles-release >= 12
 @BCOND_RGW@ rgw
 %global use_fsal_rgw %{on_off_switch rgw}
 
-@BCOND_LUSTRE@ lustre
-%global use_fsal_lustre %{on_off_switch lustre}
-
-@BCOND_SHOOK@ shook
-%global use_fsal_shook %{on_off_switch shook}
-
 @BCOND_GLUSTER@ gluster
 %global use_fsal_gluster %{on_off_switch gluster}
 
-@BCOND_HPSS@ hpss
-%global use_fsal_hpss %{on_off_switch hpss}
-
 @BCOND_PANFS@ panfs
 %global use_fsal_panfs %{on_off_switch panfs}
-
-@BCOND_PT@ pt
-%global use_fsal_pt %{on_off_switch pt}
 
 @BCOND_RDMA@ rdma
 %global use_rdma %{on_off_switch rdma}
 
 @BCOND_JEMALLOC@ jemalloc
-
-@BCOND_FSAL_LUSTRE_UP@ lustre_up
-%global use_lustre_up %{on_off_switch lustre_up}
 
 @BCOND_LTTNG@ lttng
 %global use_lttng %{on_off_switch lttng}
@@ -123,6 +108,7 @@ BuildRequires:	systemd-rpm-macros
 BuildRequires:	libcap-devel
 BuildRequires:	libblkid-devel
 BuildRequires:	libuuid-devel
+BuildRequires:	gcc-c++
 %if %{with system_ntirpc}
 BuildRequires: libntirpc-devel >= @NTIRPC_VERSION@
 %endif
@@ -146,9 +132,6 @@ BuildRequires:	libmooshika-devel >= 0.6-0
 %endif
 %if %{with jemalloc}
 BuildRequires:	jemalloc-devel
-%endif
-%if %{with lustre_up}
-BuildRequires: lcap-devel >= 0.1-0
 %endif
 %if %{with_systemd}
 BuildRequires: systemd
@@ -212,6 +195,7 @@ BuildRequires:	PyQt4-devel
 Requires:	PyQt4
 %endif
 %endif
+BuildRequires:  python-devel
 Requires: nfs-ganesha = %{version}-%{release}, python
 
 %description utils
@@ -230,7 +214,7 @@ This package contains the libganesha_trace.so library. When preloaded
 to the ganesha.nfsd server, it makes it possible to trace using LTTng.
 %endif
 
-# Option packages start here. use "rpmbuild --with lustre" (or equivalent)
+# Option packages start here. use "rpmbuild --with gpfs" (or equivalent)
 # for activating this part of the spec file
 
 # NULL
@@ -273,57 +257,27 @@ be used with NFS-Ganesha to support ZFS
 # CEPH
 %if %{with ceph}
 %package ceph
-Summary: The NFS-GANESHA's CEPH FSAL
+Summary: The NFS-GANESHA's CephFS FSAL
 Group: Applications/System
 Requires:	nfs-ganesha = %{version}-%{release}
-Requires:	ceph >= 0.78
-BuildRequires:	ceph-devel >= 0.78
+BuildRequires:	libcephfs1-devel >= 10.2.0
 
 %description ceph
 This package contains a FSAL shared object to
-be used with NFS-Ganesha to support CEPH
+be used with NFS-Ganesha to support CephFS
 %endif
 
 # RGW
 %if %{with rgw}
 %package rgw
-Summary: The NFS-GANESHA's RGW FSAL
+Summary: The NFS-GANESHA's Ceph RGW FSAL
 Group: Applications/System
 Requires:	nfs-ganesha = %{version}-%{release}
-Requires:	rgw >= 0.78
-BuildRequires:	rgw-devel >= 0.78
+BuildRequires:	librgw2-devel >= 10.2.0
 
 %description rgw
 This package contains a FSAL shared object to
-be used with NFS-Ganesha to support RGW
-%endif
-
-# LUSTRE
-%if %{with lustre}
-%package lustre
-Summary: The NFS-GANESHA's LUSTRE FSAL
-Group: Applications/System
-Requires:	nfs-ganesha = %{version}-%{release}
-Requires:	lustre
-BuildRequires:	libattr-devel lustre
-
-%description lustre
-This package contains a FSAL shared object to
-be used with NFS-Ganesha to support LUSTRE
-%endif
-
-# SHOOK
-%if %{with shook}
-%package shook
-Summary: The NFS-GANESHA's LUSTRE/SHOOK FSAL
-Group: Applications/System
-Requires:	nfs-ganesha = %{version}-%{release}
-Requires:	lustre shook-client
-BuildRequires:	libattr-devel lustre shook-devel
-
-%description shook
-This package contains a FSAL shared object to
-be used with NFS-Ganesha to support LUSTRE via SHOOK
+be used with NFS-Ganesha to support Ceph RGW
 %endif
 
 # XFS
@@ -339,19 +293,6 @@ This package contains a shared object to be used with FSAL_VFS
 to support XFS correctly
 %endif
 
-# HPSS
-%if %{with hpss}
-%package hpss
-Summary: The NFS-GANESHA's HPSS FSAL
-Group: Applications/System
-Requires:	nfs-ganesha = %{version}-%{release}
-#BuildRequires:	hpssfs
-
-%description hpss
-This package contains a FSAL shared object to
-be used with NFS-Ganesha to support HPSS
-%endif
-
 # PANFS
 %if %{with panfs}
 %package panfs
@@ -364,26 +305,13 @@ This package contains a FSAL shared object to
 be used with NFS-Ganesha to support PANFS
 %endif
 
-# PT
-%if %{with pt}
-%package pt
-Summary: The NFS-GANESHA's PT FSAL
-Group: Applications/System
-Requires:	nfs-ganesha = %{version}-%{release}
-
-
-%description pt
-This package contains a FSAL shared object to
-be used with NFS-Ganesha to support PT
-%endif
-
 # GLUSTER
 %if %{with gluster}
 %package gluster
 Summary: The NFS-GANESHA's GLUSTER FSAL
 Group: Applications/System
 Requires:	nfs-ganesha = %{version}-%{release}
-BuildRequires:        glusterfs-api-devel >= 3.7.4
+BuildRequires:        glusterfs-api-devel >= 3.8
 BuildRequires:        libattr-devel, libacl-devel
 
 %description gluster
@@ -402,16 +330,11 @@ cmake .	-DCMAKE_BUILD_TYPE=Debug			\
 	-DUSE_FSAL_XFS=%{use_fsal_xfs}			\
 	-DUSE_FSAL_CEPH=%{use_fsal_ceph}		\
 	-DUSE_FSAL_RGW=%{use_fsal_rgw}			\
-	-DUSE_FSAL_LUSTRE=%{use_fsal_lustre}		\
-	-DUSE_FSAL_SHOOK=%{use_fsal_shook}		\
 	-DUSE_FSAL_GPFS=%{use_fsal_gpfs}		\
-	-DUSE_FSAL_HPSS=%{use_fsal_hpss}		\
 	-DUSE_FSAL_PANFS=%{use_fsal_panfs}		\
-	-DUSE_FSAL_PT=%{use_fsal_pt}			\
 	-DUSE_FSAL_GLUSTER=%{use_fsal_gluster}		\
 	-DUSE_SYSTEM_NTIRPC=%{use_system_ntirpc}	\
 	-DUSE_9P_RDMA=%{use_rdma}			\
-	-DUSE_FSAL_LUSTRE_UP=%{use_lustre_up}		\
 	-DUSE_LTTNG=%{use_lttng}			\
 	-DUSE_ADMIN_TOOLS=%{use_utils}			\
 	-DUSE_GUI_ADMIN_TOOLS=%{use_gui_utils}		\
@@ -452,14 +375,8 @@ install -m 644 scripts/systemd/nfs-ganesha-config.service %{buildroot}%{_unitdir
 install -m 644 scripts/systemd/sysconfig/nfs-ganesha	%{buildroot}%{_sysconfdir}/sysconfig/ganesha
 %else
 mkdir -p %{buildroot}%{_sysconfdir}/init.d
-install -m 755 scripts/init.d/nfs-ganesha		%{buildroot}%{_sysconfdir}/init.d/nfs-ganesha
+install -m 755 scripts/init.d/nfs-ganesha.el6		%{buildroot}%{_sysconfdir}/init.d/nfs-ganesha
 install -m 644 scripts/init.d/sysconfig/ganesha		%{buildroot}%{_sysconfdir}/sysconfig/ganesha
-%endif
-
-%if %{with utils} && 0%{?rhel} && 0%{?rhel} <= 6
-%{!?__python2: %global __python2 /usr/bin/python2}
-%{!?python2_sitelib: %global python2_sitelib %(%{__python2} -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())")}
-%{!?python2_sitearch: %global python2_sitearch %(%{__python2} -c "from distutils.sysconfig import get_python_lib; print(get_python_lib(1))")}
 %endif
 
 %if %{with pt}
@@ -476,10 +393,6 @@ install -m 644 config_samples/zfs.conf %{buildroot}%{_sysconfdir}/ganesha
 
 %if %{with ceph}
 install -m 644 config_samples/ceph.conf %{buildroot}%{_sysconfdir}/ganesha
-%endif
-
-%if %{with lustre}
-install -m 755 config_samples/lustre.conf %{buildroot}%{_sysconfdir}/ganesha
 %endif
 
 %if %{with gluster}
@@ -536,7 +449,7 @@ killall -SIGHUP dbus-daemon 2>&1 > /dev/null
 %{_bindir}/ganesha.nfsd
 %if ! %{with system_ntirpc}
 %{_libdir}/libntirpc.so.@NTIRPC_VERSION@
-%{_libdir}/libntirpc.so.1.3
+%{_libdir}/libntirpc.so.1.4
 %{_libdir}/libntirpc.so
 %{_libdir}/pkgconfig/libntirpc.pc
 %{_includedir}/ntirpc/
@@ -625,30 +538,11 @@ killall -SIGHUP dbus-daemon 2>&1 > /dev/null
 %config(noreplace) %{_sysconfdir}/ganesha/rgw.conf
 %endif
 
-%if %{with lustre}
-%files lustre
-%defattr(-,root,root,-)
-%config(noreplace) %{_sysconfdir}/ganesha/lustre.conf
-%{_libdir}/ganesha/libfsallustre*
-%endif
-
-%if %{with shook}
-%files shook
-%defattr(-,root,root,-)
-%{_libdir}/ganesha/libfsalshook*
-%endif
-
 %if %{with gluster}
 %files gluster
 %defattr(-,root,root,-)
 %config(noreplace) %{_sysconfdir}/logrotate.d/ganesha-gfapi
 %{_libdir}/ganesha/libfsalgluster*
-%endif
-
-%if %{with hpss}
-%files hpss
-%defattr(-,root,root,-)
-%{_libdir}/ganesha/libfsalhpss*
 %endif
 
 %if %{with panfs}

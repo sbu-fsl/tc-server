@@ -112,8 +112,8 @@ static inline int _get_obj_fd(struct fsal_obj_handle *obj_hdl)
 	struct vfs_fsal_obj_handle *myself;
 
 	myself = container_of(obj_hdl, struct vfs_fsal_obj_handle, obj_handle);
-	if (myself->u.file.openflags != FSAL_O_CLOSED)
-		return myself->u.file.fd;
+	if (myself->u.file.fd.openflags != FSAL_O_CLOSED)
+		return myself->u.file.fd.fd;
 	else
 		return -1;
 }
@@ -292,7 +292,7 @@ static void initiate_recall(struct vfs_fsal_obj_handle *myself,
 	/* For layoutrecall up_ops are probably set to default recieved at
 	 * vfs_create_export
 	 */
-	myself->up_ops->layoutrecall(myself->obj_handle.fsal,
+	myself->up_ops->layoutrecall(myself->up_ops->export,
 				     &handle, LAYOUT4_OSD2_OBJECTS,
 				     false, &up_segment, r_cookie, NULL);
 
@@ -351,8 +351,6 @@ static int _start_callback_thread(int root_fd, void **pnfs_data)
 	int err;
 
 	_rt = gsh_calloc(1, sizeof(*_rt));
-	if (!_rt)
-		return ENOMEM;
 
 	_rt->fd = root_fd;
 

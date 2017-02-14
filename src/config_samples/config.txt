@@ -18,12 +18,9 @@ LOG { FORMAT {} }
 CACHEINODE
 CEPH {}
 GPFS {}
-LUSTRE {}
-LUSTRE { PNFS { DATASERVER {} } }
 RGW {}
 VFS {}
 XFS {}
-PT {}
 ZFS {}
 PROXY {}
 PROXY { Remote_Server {} }
@@ -55,7 +52,7 @@ NFS_CORE_PARAM {}
 
 	Rquota_Program(uint32, range 1 to INT32_MAX, default  100011)
 
-	Nb_Worker(uint32, range 1 to 1024*128, default 16)
+	Nb_Worker(uint32, range 1 to 1024*128, default 256)
 
 	Drop_IO_Errors(bool, default false)
 
@@ -105,9 +102,17 @@ NFS_CORE_PARAM {}
 
 	RPC_Ioq_ThrdMax(uint32, range 1 to 1024*128 default 200)
 
+	RPC_GSS_Npart(uint32, range 1 to 1021, default 13)
+
+	RPC_GSS_Max_Ctx(uint32, range 1 to 1048576, default 16384)
+
+	RPC_GSS_Max_Gc(uint32, range 1 to 1048576, default 200)
+
 	Decoder_Fridge_Expiration_Delay(int64, range 0 to 7200, default 600)
 
 	Decoder_Fridge_Block_Timeout(int64, range 0 to 7200, default 600)
+
+	Blocked_Lock_Poller_Interval(int64, range 0 to 180, default 10)
 
 	NFS_Protocols(list, valid values [3, 4], default 3,4)
 
@@ -118,6 +123,8 @@ NFS_CORE_PARAM {}
 	Enable_NLM(bool, default true)
 
 	Enable_RQUOTA(bool, default true)
+
+	Enable_TCP_keepalive(bool, default false)
 
 	Enable_Fast_Stats(bool, default false)
 
@@ -176,14 +183,16 @@ EXPORT_DEFAULTS {}
 	These options are all "export permissions" options, and will be
 	repeated in the EXPORT {} and EXPORT { CLIENT {} } blocks.
 
+	These options will all be dynamically updateable.
+
 	Access_Type(enum, values [None, RW, RO, MDONLY, MDONLY_RO],
 		    default None)
 
 	Protocols(enum list,
 		  values [3, 4, NFS3, NFS4, V3, V4, NFSv3, NFSv4, 9P],
-		  default [3, 4, 9P])
+		  default [3, 4])
 
-	Transports(enum list, values [UDP, TCP], default [UDP, TCP])
+	Transports(enum list, values [UDP, TCP, RDMA], default [UDP, TCP])
 
 	Anonymous_uid(anonid, range INT32MIN to UINT32MAX, default -2)
 
@@ -197,8 +206,9 @@ EXPORT_DEFAULTS {}
 	Manage_Gids(bool, default false)
 
 	Squash(enum, values [root, root_squash, rootsquash,
+			     rootid, root_id_squash, rootidsquash,
 			     all, all_squash, allsquash,
-			     all_anomnymous, allanonymous,
+				all_anomnymous, allanonymous,
 			     no_root_squash, none, noidsquash],
 	       default root_squash)
 
@@ -214,6 +224,9 @@ EXPORT {}
 
 	* Take all the "export permissions" options from EXPORT_DEFAULTS.
 
+	* The first 5 options are considered static from the perspective of
+	  dynamic update.
+
 	Path(path, no default, must be supplied)
 
 	Pseudo(path, no default)
@@ -221,6 +234,14 @@ EXPORT {}
 	Tag(string, no default)
 
 	Export_id(uint16, range 0 to UINT16_MAX, default 1)
+
+	Filesystem_id(fsid, format is uint64.uint64, default 666.666)
+
+		* Updating Filesystem_id would have an adverse impact on
+		  existing client mounts and it's not currently a type that
+		  can be atomically updated.
+
+	* The following options may be dynamically updated
 
 	MaxRead(uint64, range 512 to 64*1024*1024, default 64*1024*1024)
 
@@ -236,23 +257,35 @@ EXPORT {}
 
 	MaxOffsetRead(uint64, range 512 to UINT64_MAX, default UINT64_MAX)
 
-	Filesystem_id(fsid, format is uint64.uint64, default 666.666)
-
-	UseCookieVerifier(bool, default true)
-
 	DisableReaddirPlus(bool, default false)
 
 	Trust_Readdir_Negative_Cache(bool, default false)
 
+	* The following options may have limits on dynamic effect
+
+	UseCookieVerifier(bool, default true)
+
+		* Updating UseCookieVerifier while a readdir is in
+		  progress may result in unexpected behavior.
+
 	Disable_ACL(bool, default false)
 
+		* Disable_ACL is processed at create_export time currently
+		  which makes it effectively a static option.
+
 	Attr_Expiration_Time(int32, range -1 to INT32_MAX, default 60)
+
+		* Attr_Expiration_Time is evaluated when an MDCACHE entry
+		  is created, so the dynamic effect of this option may
+		  be constrained to new entries.
 
 
 EXPORT { CLIENT  {} }
 ---------------------
 
 	* Take all the "export permissions" options from EXPORT_DEFAULTS.
+
+	* The client lists are dynamically updateable.
 
 	Clients(client list, empty)
 
@@ -295,27 +328,10 @@ EXPORT { FSAL {} }
 	fsid_type(enum, values [None, One64, Major64, Two64, uuid, Two32, Dev,
 			        Device], no default)
 
-	FSAL_PT:
-	--------
-
-	pt_export_id(int64, range INT64_MIN to INT64_MAX, default 1)
-
 	FSAL_ZFS:
 	---------
 
 	zpool(string, default "tank", must be supplied)
-
-	FSAL_LUSTRE:
-	------------
-
-	LUSTRE { PNFS { DATASERVER {} } }
-	------------
-
-		DS_Addr(ipv4addr, default "127.0.0.1")
-
-		DS_Port(inet_port, range 1024 to UINT16_MAX, default 3260)
-
-		DS_Id(uint32, range 1 to UINT32_MAX, default 1)
 
 	EXPORT { FSAL { PNFS { } } }
 	---------------------------
@@ -438,6 +454,8 @@ CACHEINODE
 
 	Dir_Max_Deleted(uint32, range 1 to UINT32_MAX, default 65536)
 
+	Dir_Max(uint32, range 1 to UINT32_MAX, default 65536)
+
 	Entries_HWMark(uint32, range 1 to UINT32_MAX, default 100000)
 
 	LRU_Run_Interval(uint32, range 1 to 24 * 3600, default 90)
@@ -505,25 +523,6 @@ GPFS {}
 	fsal_trace(bool, default true)
 
 	fsal_grace(bool, default false)
-
-LUSTRE {}
----------
-
-	link_support(bool, default true)
-
-	symlink_support(bool, default true)
-
-	cansettime(bool, default true)
-
-	maxread(uint64, range 512 to 64*1024*1024, default 64*1024*1024)
-
-	maxwrite(uint64, range 512 to 64*1024*1024, default 64*1024*1024)
-
-	umask(mode, range 0 to 0777, default 0)
-
-	auth_xdev_export(bool, default false)
-
-	xattr_access_rights(mode, range 0 to 0777, default 0400)
 
 RGW {}
 -------
@@ -597,25 +596,6 @@ XFS {}
 
 	xattr_access_rights(mode, range 0 to 0777, default 0400)
 
-PT {}
------
-
-	link_support(bool, default true)
-
-	symlink_support(bool, default true)
-
-	cansettime(bool, default true)
-
-	maxread(uint64, range 512 to 64*1024*1024, default 64*1024*1024)
-
-	maxwrite(uint64, range 512 to 64*1024*1024, default 64*1024*1024)
-
-	umask(mode, range 0 to 0777, default 0)
-
-	auth_xdev_export(bool, default false)
-
-	xattr_access_rights(mode, range 0 to 0777, default 0400)
-
 ZFS {}
 ------
 
@@ -644,9 +624,14 @@ PROXY {}
 
 	cansettime(bool, default true)
 
-	maxread(uint64, range 512 to 64*1024*1024, default 64*1024*1024)
+	/*MAX_READ_WRITE_SIZE == 1MB*/
+	/*FSAL_MAXIOSIZE = 64 MB*/
+	/*SEND_RECV_HEADER_SPACE == 512 Bytes*/
+	maxread(uint64, range 512 to FSAL_MAXIOSIZE - SEND_RECV_HEADER_SPACE,
+		default MAX_READ_WRITE_SIZE)
 
-	maxwrite(uint64, range 512 to 64*1024*1024, default 64*1024*1024)
+	maxwrite(uint64, range 512 to FSAL_MAXIOSIZE - SEND_RECV_HEADER_SPACE,
+		 default MAX_READ_WRITE_SIZE)
 
 	umask(mode, range 0 to 0777, default 0)
 
@@ -663,9 +648,18 @@ PROXY { Remote_Server {} }
 
 	NFS_Service(uint32, range 0 to UINT32_MAX, default 100003)
 
-	NFS_SendSize(uint32, range 512 to FSAL_MAXIOSIZE, default 32768)
+	/*NFS_SendSize must be greater than maxwrite+SEND_RECV_HEADER_SPACE .*/
+	/*NFS_RecvSize must be greater than maxread+SEND_RECV_HEADER_SPACE .*/
+	/*MAX_READ_WRITE_SIZE == 1 MB*/
+	/*SEND_RECV_HEADER_SPACE == 512 Bytes*/
+	/*FSAL_MAXIOSIZE = 64 MB*/
+	NFS_SendSize(uint32, range 512 + SEND_RECV_HEADER_SPACE
+					to FSAL_MAXIOSIZE,
+		     default MAX_READ_WRITE_SIZE + SEND_RECV_HEADER_SPACE)
 
-	NFS_RecvSize(uint32, range 512 to FSAL_MAXIOSIZE, default 32768)
+	NFS_RecvSize(uint32, range 512 + SEND_RECV_HEADER_SPACE
+					to FSAL_MAXIOSIZE,
+		     default MAX_READ_WRITE_SIZE + SEND_RECV_HEADER_SPACE)
 
 	NFS_Port(inet_port, range 0 to UINT16_MAX, default 2049)
 

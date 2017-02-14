@@ -84,7 +84,8 @@ static void release(struct fsal_export *export_pub)
 
 static fsal_status_t lookup_path(struct fsal_export *export_pub,
 				 const char *path,
-				 struct fsal_obj_handle **pub_handle)
+				 struct fsal_obj_handle **pub_handle,
+				 struct attrlist *attrs_out)
 {
 	/* The 'private' full export handle */
 	struct rgw_export *export =
@@ -124,6 +125,11 @@ static fsal_status_t lookup_path(struct fsal_export *export_pub,
 	}
 
 	*pub_handle = &handle->handle;
+
+	if (attrs_out != NULL) {
+		posix2fsal_attributes(&st, attrs_out);
+	}
+
 	return status;
 }
 
@@ -169,7 +175,8 @@ static fsal_status_t extract_handle(struct fsal_export *exp_hdl,
  */
 static fsal_status_t create_handle(struct fsal_export *export_pub,
 				   struct gsh_buffdesc *desc,
-				   struct fsal_obj_handle **pub_handle)
+				   struct fsal_obj_handle **pub_handle,
+				   struct attrlist *attrs_out)
 {
 	/* Full 'private' export structure */
 	struct rgw_export *export =
@@ -212,6 +219,11 @@ static fsal_status_t create_handle(struct fsal_export *export_pub,
 	}
 
 	*pub_handle = &handle->handle;
+
+	if (attrs_out != NULL) {
+		posix2fsal_attributes(&st, attrs_out);
+	}
+
 	return status;
 }
 
@@ -482,4 +494,5 @@ void export_ops_init(struct export_ops *ops)
 	ops->fs_supported_attrs = fs_supported_attrs;
 	ops->fs_umask = fs_umask;
 	ops->fs_xattr_access_rights = fs_xattr_access_rights;
+	ops->alloc_state = alloc_state;
 }

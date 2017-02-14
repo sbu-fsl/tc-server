@@ -45,7 +45,6 @@
 #include "abstract_atomic.h"
 #include "nfs_init.h"
 #include "nfs_core.h"
-#include "cache_inode.h"
 #include "nfs_exports.h"
 #include "nfs_proto_functions.h"
 #include "nfs_dupreq.h"
@@ -198,12 +197,7 @@ void _9p_rdma_callback_recv(msk_trans_t *trans, msk_data_t *data, void *arg)
 	u16 tag = 0;
 	char *_9pmsg = NULL;
 
-	req = pool_alloc(request_pool, NULL);
-	if (req == NULL) {
-		_9p_rdma_callback_recv_err(trans, data, arg);
-		return;
-	}
-
+	req = pool_alloc(request_pool);
 
 	req->rtype = _9P_REQUEST;
 	req->r_u._9p._9pmsg = _9pmsg;

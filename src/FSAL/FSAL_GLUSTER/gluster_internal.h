@@ -110,7 +110,6 @@ typedef enum {
 	lat_file_write,
 	lat_commit,
 	lat_file_close,
-	lat_lru_cleanup,
 	lat_makesymlink,
 	lat_readsymlink,
 	lat_linkfile,
@@ -145,14 +144,23 @@ struct glusterfs_export {
 	pthread_t up_thread; /* upcall thread */
 };
 
+struct glusterfs_fd {
+	/** The open and share mode etc. This MUST be first in every
+	 *  file descriptor structure.
+	 */
+	fsal_openflags_t openflags;
+
+	/** Gluster file descriptor. */
+	struct glfs_fd *glfd;
+};
+
 struct glusterfs_handle {
 	struct glfs_object *glhandle;
 	unsigned char globjhdl[GLAPI_HANDLE_LENGTH];	/* handle descriptor,
 							   for wire handle */
-	struct glfs_fd *glfd;
-	fsal_openflags_t openflags;
+	struct glusterfs_fd globalfd;
 	struct fsal_obj_handle handle;	/* public FSAL handle */
-	struct attrlist attributes; /* Attributes of this Object. */
+	struct fsal_share share; /* share_reservations */
 
 	/* following added for pNFS support */
 	uint64_t rd_issued;
@@ -212,10 +220,10 @@ void stat2fsal_attributes(const struct stat *buffstat,
 
 struct fsal_staticfsinfo_t *gluster_staticinfo(struct fsal_module *hdl);
 
-int construct_handle(struct glusterfs_export *glexport, const struct stat *st,
-		     struct glfs_object *glhandle, unsigned char *globjhdl,
-		     int len, struct glusterfs_handle **obj,
-		     const char *vol_uuid);
+void construct_handle(struct glusterfs_export *glexport, const struct stat *st,
+		      struct glfs_object *glhandle, unsigned char *globjhdl,
+		      int len, struct glusterfs_handle **obj,
+		      const char *vol_uuid);
 
 fsal_status_t glusterfs_create_export(struct fsal_module *fsal_hdl,
 				      void *parse_node,

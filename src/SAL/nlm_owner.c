@@ -39,6 +39,7 @@
 #include <ctype.h>
 #include <netdb.h>
 
+#include "gsh_config.h"
 #include "sal_functions.h"
 #include "nsm.h"
 #include "log.h"
@@ -763,7 +764,7 @@ int Init_nlm_hash(void)
  */
 void inc_nsm_client_ref(state_nsm_client_t *client)
 {
-	atomic_inc_int32_t(&client->ssc_refcount);
+	(void) atomic_inc_int32_t(&client->ssc_refcount);
 }
 
 /**
@@ -972,29 +973,12 @@ state_nsm_client_t *get_nsm_client(care_t care, SVCXPRT *xprt,
 
 	pclient = gsh_malloc(sizeof(*pclient));
 
-	if (pclient == NULL) {
-		display_nsm_client(&dspbuf, &key);
-		LogCrit(COMPONENT_STATE, "No memory for {%s}", str);
-
-		hashtable_releaselatched(ht_nsm_client, &latch);
-
-		return NULL;
-	}
-
 	/* Copy everything over */
 	memcpy(pclient, &key, sizeof(key));
 
 	PTHREAD_MUTEX_init(&pclient->ssc_mutex, NULL);
 
 	pclient->ssc_nlm_caller_name = gsh_strdup(key.ssc_nlm_caller_name);
-
-	if (pclient->ssc_nlm_caller_name == NULL) {
-		/* Discard the created client */
-		PTHREAD_MUTEX_destroy(&pclient->ssc_mutex);
-		free_nsm_client(pclient);
-		hashtable_releaselatched(ht_nsm_client, &latch);
-		return NULL;
-	}
 
 	glist_init(&pclient->ssc_lock_list);
 	glist_init(&pclient->ssc_share_list);
@@ -1071,7 +1055,7 @@ void free_nlm_client(state_nlm_client_t *client)
  */
 void inc_nlm_client_ref(state_nlm_client_t *client)
 {
-	atomic_inc_int32_t(&client->slc_refcount);
+	(void) atomic_inc_int32_t(&client->slc_refcount);
 }
 
 /**
@@ -1265,13 +1249,6 @@ state_nlm_client_t *get_nlm_client(care_t care, SVCXPRT *xprt,
 	}
 
 	pclient = gsh_malloc(sizeof(*pclient));
-
-	if (pclient == NULL) {
-		display_nlm_client(&dspbuf, &key);
-		LogCrit(COMPONENT_STATE, "No memory for {%s}", str);
-
-		return NULL;
-	}
 
 	/* Copy everything over */
 	memcpy(pclient, &key, sizeof(key));

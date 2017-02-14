@@ -39,8 +39,6 @@
 #include <sys/stat.h>
 #include "nfs_core.h"
 #include "log.h"
-#include "cache_inode.h"
-#include "cache_inode_lru.h"
 #include "fsal.h"
 #include "9p.h"
 
@@ -55,9 +53,8 @@ int _9p_walk(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 	u16 *nwname = NULL;
 	u16 *wnames_len;
 	char *wnames_str;
-	uint64_t fileid;
-	cache_inode_status_t cache_status;
-	cache_entry_t *pentry = NULL;
+	fsal_status_t fsal_status;
+	struct fsal_obj_handle *pentry = NULL;
 	char name[MAXNAMLEN];
 
 	u16 *nwqid;
@@ -88,16 +85,6 @@ int _9p_walk(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 	}
 	_9p_init_opctx(pfid, req9p);
 	pnewfid = gsh_calloc(1, sizeof(struct _9p_fid));
-	if (pnewfid == NULL)
-		return _9p_rerror(req9p, msgtag, ERANGE, plenout, preply);
-
-	/* Initialize state_t embeded in fid. The refcount is initialized
-	 * to one to represent the state_t being embeded in the fid. This
-	 * prevents it from ever being reduced to zero by dec_state_t_ref.
-	 */
-	glist_init(&pfid->state.state_data.fid.state_locklist);
-	pfid->state.state_type = STATE_TYPE_9P_FID;
-	pfid->state.state_refcount = 1;
 
 	/* Is this a lookup or a fid cloning operation ? */
 	if (*nwname == 0) {
@@ -108,7 +95,7 @@ int _9p_walk(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 		pnewfid->fid = *newfid;
 
 		/* Increments refcount */
-		(void) cache_inode_lru_ref(pnewfid->pentry, LRU_REQ_STALE_OK);
+		pnewfid->pentry->obj_ops.get_ref(pnewfid->pentry);
 	} else {
 		/* the walk is in fact a lookup */
 		pentry = pfid->pentry;
@@ -127,24 +114,25 @@ int _9p_walk(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 				pnewfid->pentry = NULL;
 
 			/* refcount +1 */
-			cache_status =
-			    cache_inode_lookup(pentry, name, &pnewfid->pentry);
-
-			if (pnewfid->pentry == NULL) {
+			fsal_status = fsal_lookup(pentry, name,
+						  &pnewfid->pentry, NULL);
+			if (FSAL_IS_ERROR(fsal_status)) {
 				gsh_free(pnewfid);
 				return _9p_rerror(req9p, msgtag,
-						  _9p_tools_errno(cache_status),
+						  _9p_tools_errno(fsal_status),
 						  plenout, preply);
 			}
 
 			if (pentry != pfid->pentry)
-				cache_inode_put(pentry);
+				pentry->obj_ops.put_ref(pentry);
 
 			pentry = pnewfid->pentry;
 		}
 
 		pnewfid->fid = *newfid;
+
 		pnewfid->ppentry = pfid->pentry;
+
 		strncpy(pnewfid->name, name, MAXNAMLEN-1);
 
 		/* gdata ref is not hold : the pfid, which use same gdata */
@@ -157,13 +145,11 @@ int _9p_walk(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 		pnewfid->export = pfid->export;
 		pnewfid->ucred = pfid->ucred;
 
-		fileid = cache_inode_fileid(pnewfid->pentry);
-
 		/* Build the qid */
 		/* No cache, we want the client to stay synchronous
 		 * with the server */
 		pnewfid->qid.version = 0;
-		pnewfid->qid.path = fileid;
+		pnewfid->qid.path = pnewfid->pentry->fileid;
 
 		pnewfid->specdata.xattr.xattr_id = 0;
 		pnewfid->specdata.xattr.xattr_content = NULL;
@@ -188,6 +174,7 @@ int _9p_walk(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 		default:
 			LogMajor(COMPONENT_9P,
 				 "implementation error, you should not see this message !!!!!!");
+			pentry->obj_ops.put_ref(pentry);
 			gsh_free(pnewfid);
 			return _9p_rerror(req9p, msgtag, EINVAL,
 					  plenout, preply);
@@ -195,6 +182,18 @@ int _9p_walk(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 		}
 
 	}
+
+	/* Initialize state_t embeded in fid. The refcount is initialized
+	 * to one to represent the state_t being embeded in the fid. This
+	 * prevents it from ever being reduced to zero by dec_state_t_ref.
+	 */
+	pnewfid->state = pnewfid->export->fsal_export->exp_ops.alloc_state(
+						pnewfid->export->fsal_export,
+						STATE_TYPE_9P_FID,
+						NULL);
+
+	glist_init(&pnewfid->state->state_data.fid.state_locklist);
+	pnewfid->state->state_refcount = 1;
 
 	/* keep info on new fid */
 	req9p->pconn->fids[*newfid] = pnewfid;
@@ -206,6 +205,11 @@ int _9p_walk(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 	uid2grp_hold_group_data(pnewfid->gdata);
 	get_9p_user_cred_ref(pnewfid->ucred);
 	get_gsh_export_ref(pnewfid->export);
+
+	if (pnewfid->ppentry != NULL) {
+		/* Increments refcount for ppentry */
+		pnewfid->ppentry->obj_ops.get_ref(pnewfid->ppentry);
+	}
 
 	/* Build the reply */
 	_9p_setinitptr(cursor, preply, _9P_RWALK);
@@ -222,10 +226,9 @@ int _9p_walk(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 	_9p_checkbound(cursor, preply, plenout);
 
 	LogDebug(COMPONENT_9P,
-		 "RWALK: tag=%u fid=%u newfid=%u nwqid=%u fileid=%llu pentry=%p refcount=%i",
+		 "RWALK: tag=%u fid=%u newfid=%u nwqid=%u fileid=%llu pentry=%p",
 		 (u32) *msgtag, *fid, *newfid, *nwqid,
-		 (unsigned long long)pnewfid->qid.path, pnewfid->pentry,
-		 pnewfid->pentry->lru.refcnt);
+		 (unsigned long long)pnewfid->qid.path, pnewfid->pentry);
 
 	return 1;
 }

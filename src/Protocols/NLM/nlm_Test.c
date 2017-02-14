@@ -45,7 +45,7 @@
 int nlm4_Test(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 {
 	nlm4_testargs *arg = &args->arg_nlm4_test;
-	cache_entry_t *pentry;
+	struct fsal_obj_handle *obj;
 	state_status_t state_status = STATE_SUCCESS;
 	char buffer[MAXNETOBJ_SZ * 2];
 	state_nsm_client_t *nsm_client;
@@ -59,7 +59,7 @@ int nlm4_Test(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 	 * responding to an NLM_*_MSG call, so we check here if the export is
 	 * NULL and if so, handle the response.
 	 */
-	if (op_ctx->export == NULL) {
+	if (op_ctx->ctx_export == NULL) {
 		res->res_nlm4test.test_stat.stat = NLM4_STALE_FH;
 		LogInfo(COMPONENT_NLM, "INVALID HANDLE: nlm4_Test");
 		return NFS_REQ_OK;
@@ -74,13 +74,7 @@ int nlm4_Test(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 		 (unsigned long long)arg->alock.l_len,
 		 buffer);
 
-	if (!copy_netobj(&res->res_nlm4test.cookie, &arg->cookie)) {
-		res->res_nlm4test.test_stat.stat = NLM4_FAILED;
-		LogDebug(COMPONENT_NLM,
-			 "REQUEST RESULT: nlm4_Test %s",
-			 lock_result_str(res->res_nlm4.stat.stat));
-		return NFS_REQ_OK;
-	}
+	copy_netobj(&res->res_nlm4test.cookie, &arg->cookie);
 
 	if (nfs_in_grace()) {
 		res->res_nlm4test.test_stat.stat = NLM4_DENIED_GRACE_PERIOD;
@@ -102,7 +96,7 @@ int nlm4_Test(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 				    arg->exclusive,
 				    &arg->alock,
 				    &lock,
-				    &pentry,
+				    &obj,
 				    CARE_NO_MONITOR,
 				    &nsm_client,
 				    &nlm_client,
@@ -121,7 +115,7 @@ int nlm4_Test(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 		return NFS_REQ_OK;
 	}
 
-	state_status = state_test(pentry,
+	state_status = state_test(obj,
 				  state,
 				  nlm_owner,
 				  &lock,
@@ -152,7 +146,7 @@ int nlm4_Test(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 	dec_nsm_client_ref(nsm_client);
 	dec_nlm_client_ref(nlm_client);
 	dec_state_owner_ref(nlm_owner);
-	cache_inode_put(pentry);
+	obj->obj_ops.put_ref(obj);
 
 	LogDebug(COMPONENT_NLM,
 		 "REQUEST RESULT: nlm4_Test %s",

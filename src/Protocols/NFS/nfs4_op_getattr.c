@@ -37,13 +37,12 @@
 #include "gsh_rpc.h"
 #include "nfs4.h"
 #include "nfs_core.h"
-#include "cache_inode.h"
 #include "nfs_exports.h"
 #include "nfs_proto_functions.h"
 #include "nfs_proto_tools.h"
 #include "nfs_file_handle.h"
 
-static inline bool check_fs_locations(cache_entry_t *entry)
+static inline bool check_fs_locations(struct fsal_obj_handle *obj)
 {
 	fsal_status_t st;
 	fs_locations4 fs_locs;
@@ -75,8 +74,7 @@ static inline bool check_fs_locations(cache_entry_t *entry)
 	   path and update its length, can not be bigger than MAXPATHLEN
 	   server and update its length, can not be bigger than MAXHOSTNAMELEN
 	*/
-	st = entry->obj_handle->obj_ops.fs_locations(entry->obj_handle,
-						     &fs_locs);
+	st = obj->obj_ops.fs_locations(obj, &fs_locs);
 
 	return !FSAL_IS_ERROR(st);
 }
@@ -99,6 +97,8 @@ int nfs4_op_getattr(struct nfs_argop4 *op, compound_data_t *data,
 {
 	GETATTR4args * const arg_GETATTR4 = &op->nfs_argop4_u.opgetattr;
 	GETATTR4res * const res_GETATTR4 = &resp->nfs_resop4_u.opgetattr;
+	attrmask_t mask;
+	struct attrlist attrs;
 
 	/* This is a NFS4_OP_GETTAR */
 	resp->resop = NFS4_OP_GETATTR;
@@ -124,22 +124,33 @@ int nfs4_op_getattr(struct nfs_argop4 *op, compound_data_t *data,
 		return res_GETATTR4->status;
 	}
 
+	res_GETATTR4->status =
+	    bitmap4_to_attrmask_t(&arg_GETATTR4->attr_request, &mask);
+
+	if (res_GETATTR4->status != NFS4_OK)
+		return res_GETATTR4->status;
+
+	/* Add mode to what we actually ask for so we can do fslocations
+	 * test.
+	 */
+	fsal_prepare_attrs(&attrs, mask | ATTR_MODE);
+
 	nfs4_bitmap4_Remove_Unsupported(&arg_GETATTR4->attr_request);
 
-	res_GETATTR4->status =
-		   cache_entry_To_Fattr(data->current_entry,
-					&res_GETATTR4->GETATTR4res_u.resok4.
-					obj_attributes,
-					data,
-					&data->currentFH,
-					&arg_GETATTR4->attr_request);
+	res_GETATTR4->status = file_To_Fattr(
+			data, mask, &attrs,
+			&res_GETATTR4->GETATTR4res_u.resok4.obj_attributes,
+			&arg_GETATTR4->attr_request);
 
-	if (data->current_entry->type == DIRECTORY &&
-	    is_sticky_bit_set(data->current_entry->obj_handle->attrs) &&
+	if (data->current_obj->type == DIRECTORY &&
+	    is_sticky_bit_set(data->current_obj, &attrs) &&
 	    !attribute_is_set(&arg_GETATTR4->attr_request,
 			       FATTR4_FS_LOCATIONS) &&
-	    check_fs_locations(data->current_entry))
-		res_GETATTR4->status = NFS4ERR_MOVED;
+	    check_fs_locations(data->current_obj))
+			res_GETATTR4->status = NFS4ERR_MOVED;
+
+	/* Done with the attrs */
+	fsal_release_attrs(&attrs);
 
 	return res_GETATTR4->status;
 }				/* nfs4_op_getattr */
