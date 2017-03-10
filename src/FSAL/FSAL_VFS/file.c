@@ -1119,7 +1119,7 @@ fsal_status_t vfs_write2(struct fsal_obj_handle *obj_hdl,
 		goto out;
 	}
 
-	/*Farhaan starts*/
+	/* Append start */
 	if (offset == SIZE_MAX) {
 		fsal_prepare_attrs(&attrs, ATTR_SIZE);
 		status = obj_hdl->obj_ops.getattrs(obj_hdl, &attrs);
@@ -1129,7 +1129,7 @@ fsal_status_t vfs_write2(struct fsal_obj_handle *obj_hdl,
 		fsal_release_attrs(&attrs);
 		LogDebug(COMPONENT_FSAL, "Appending file from %zu", offset);
 	}
-	/*Farhaan ends*/
+	/* Append end */
 	fsal_set_credentials(op_ctx->creds);
 
 	nb_written = pwrite(my_fd, buffer, buffer_size, offset);
