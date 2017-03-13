@@ -666,7 +666,7 @@ mdcache_find_keyed(mdcache_key_t *key, mdcache_entry_t **entry)
 
 	if (key->kv.addr == NULL) {
 		LogDebug(COMPONENT_CACHE_INODE,
-			 "Attempt to use NULL key");
+			 "Attempt to use NULL key %lu", key->hk);
 		return fsalstat(ERR_FSAL_INVAL, 0);
 	}
 
@@ -929,6 +929,10 @@ fsal_status_t mdc_lookup(mdcache_entry_t *mdc_parent, const char *name,
 	PTHREAD_RWLOCK_rdlock(&mdc_parent->content_lock);
 
 	if (!strcmp(name, "..")) {
+		if (mdc_parent->fsobj.fsdir.parent.kv.len == 0 ||
+		    mdc_parent->fsobj.fsdir.parent.kv.addr == NULL) {
+			goto uncached;
+		}
 		struct mdcache_fsal_export *export = mdc_cur_export();
 
 		LogFullDebug(COMPONENT_CACHE_INODE, "Lookup parent (..)");

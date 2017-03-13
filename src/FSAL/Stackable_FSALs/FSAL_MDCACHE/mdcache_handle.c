@@ -126,7 +126,11 @@ fsal_status_t mdcache_alloc_and_check_handle(
 
 	if (new_entry->obj_handle.type == DIRECTORY) {
 		/* Insert Parent's key */
-		mdc_dir_add_parent(new_entry, parent);
+		if (strcmp(name, "..")) {
+			mdc_dir_add_parent(new_entry, parent);
+		} else {
+			mdc_get_parent(export, new_entry);
+		}
 	}
 
 	*new_obj = &new_entry->obj_handle;
