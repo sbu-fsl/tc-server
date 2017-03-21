@@ -731,7 +731,6 @@ int nfs4_Compound(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res, int is_tr
 				break;
 			}
 		}
-		LogCrit(COMPONENT_NFS_V4, "Before call. Opcode = %d", opcode);
 		status = (optabv4[opcode].funct) (&argarray[i],
 						  &data,
 						  &resarray[i]);
@@ -760,7 +759,6 @@ int nfs4_Compound(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res, int is_tr
 		}
 
 		/* Check Req size */
-		LogCrit(COMPONENT_NFS_V4, "After successful call");
 		/* NFS_V4.1 specific stuff */
 		if (data.use_drc) {
 			/* Replay cache, only true for SEQUENCE or
@@ -828,7 +826,6 @@ int nfs4_Compound(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res, int is_tr
 			 nfsstat4_to_str(status), i);
 
 	compound_data_Free(&data);
-	LogCrit(COMPONENT_NFS_V4, "Returning");
 
 	return NFS_REQ_OK;
 }				/* nfs4_Compound */

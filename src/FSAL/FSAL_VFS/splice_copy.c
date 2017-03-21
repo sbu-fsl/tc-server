@@ -23,6 +23,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <errno.h>
 
 ssize_t splice_copy_file(const char *src, size_t offset, size_t count,
@@ -31,18 +32,10 @@ ssize_t splice_copy_file(const char *src, size_t offset, size_t count,
 	int srcfd;
 	int dstfd;
 	ssize_t copied;
-	struct stat st;
 
 	srcfd = open(src, O_RDONLY);
 	if (srcfd < 0) {
 		return -errno;
-	}
-	if (count == 0) {
-		if (fstat(srcfd, &st) < 0) {
-			close(srcfd);
-			return -errno;
-		}
-		count = st.st_size;
 	}
 
 	dstfd = open(dst, O_WRONLY | O_CREAT);
@@ -96,9 +89,18 @@ ssize_t splice_fcopy(int srcfd, size_t src_offset, int dstfd,
 	ssize_t copied = 0;
 	size_t off1;
 	size_t off2;
+	struct stat st;
 
 	if (pipe(pipefd) < 0) {
 		return -errno;
+	}
+
+	if (count == UINT64_MAX) {
+		if (fstat(srcfd, &st) < 0) {
+			close(srcfd);
+			return -errno;
+		}
+		count = st.st_size - src_offset;
 	}
 
 	while (copied < count) {
