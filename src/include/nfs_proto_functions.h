@@ -154,7 +154,11 @@ int nfs3_mknod(nfs_arg_t *, struct svc_req *, nfs_res_t *);
 
 /* Functions needed for nfs v4 */
 
-int nfs4_Compound(nfs_arg_t *, struct svc_req *, nfs_res_t *);
+int nfs4_Compound(nfs_arg_t *, struct svc_req *, nfs_res_t *, int is_transaction);
+
+int nfs4_Compound_wrapper(nfs_arg_t *, struct svc_req *, nfs_res_t *);
+
+int nfs4_Transaction_wrapper(nfs_arg_t *, struct svc_req *, nfs_res_t *);
 
 int nfs4_op_access(struct nfs_argop4 *, compound_data_t *,
 		   struct nfs_resop4 *);

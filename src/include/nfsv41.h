@@ -3693,6 +3693,7 @@ extern "C" {
 	extern void *nfsproc4_null_4(void *, CLIENT *cl);
 	extern void *nfsproc4_null_4_svc(void *, struct svc_req *);
 #define NFSPROC4_COMPOUND 1
+#define NFSPROC4_TRANSACTION 2
 	extern COMPOUND4res *nfsproc4_compound_4(COMPOUND4args *, CLIENT *cl);
 	extern COMPOUND4res *nfsproc4_compound_4_svc(COMPOUND4args *,
 						     struct svc_req *r);
@@ -3703,6 +3704,7 @@ extern "C" {
 	extern void *nfsproc4_null_4();
 	extern void *nfsproc4_null_4_svc();
 #define NFSPROC4_COMPOUND 1
+#define NFSPROC4_TRANSACTION 2
 	extern COMPOUND4res *nfsproc4_compound_4();
 	extern COMPOUND4res *nfsproc4_compound_4_svc();
 	extern int nfs4_program_4_freeresult();

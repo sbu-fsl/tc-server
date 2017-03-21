@@ -475,7 +475,7 @@ nfs_opnum4 LastOpcode[] = {
  * @retval NFS_REQ_DROP if we pretend we never saw the request.
  */
 
-int nfs4_Compound(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
+int nfs4_Compound(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res, int is_transaction)
 {
 	unsigned int i = 0;
 	int status = NFS4_OK;
@@ -1125,4 +1125,16 @@ void nfs4_Compound_CopyRes(nfs_res_t *res_dst, nfs_res_t *res_src)
 			&res_src->res_compound4.resarray.resarray_val[i]);
 }
 
+/**
+*These two functions are added so that we can pass an extra argument to nfs4_Compound
+*/
+int nfs4_Compound_wrapper(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
+{
+	return nfs4_Compound(arg, req, res, 0);
+}
+
+int nfs4_Transaction_wrapper(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
+{
+        return nfs4_Compound(arg, req, res, 1);
+}
 /* @} */

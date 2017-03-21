@@ -921,7 +921,8 @@ dupreq_status_t nfs_dupreq_start(nfs_request_t *reqnfs,
 	 * used for NFSv3 and/or NFSv4 clients. We can't trust the drc type. */
 	switch (dtype) {
 	case DRC_TCP_V4:
-		if (reqnfs->funcdesc->service_function == nfs4_Compound) {
+		if (reqnfs->funcdesc->service_function == nfs4_Compound_wrapper ||
+			reqnfs->funcdesc->service_function == nfs4_Transaction_wrapper ) {
 			if (!nfs_dupreq_v4_cacheable(reqnfs)) {
 				/* for such requests, we merely thread
 				 * the request through for later

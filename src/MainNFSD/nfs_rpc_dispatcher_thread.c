@@ -1739,7 +1739,7 @@ static bool is_rpc_call_valid(struct svc_req *req)
 		} else if (req->rq_vers == NFS_V4) {
 			if ((nfs_param.core_param.
 			     core_options & CORE_OPTION_NFSV4)
-			    && req->rq_proc <= NFSPROC4_COMPOUND)
+			    && req->rq_proc <= NFSPROC4_TRANSACTION)
 				return true;
 			else
 				goto noproc_err;

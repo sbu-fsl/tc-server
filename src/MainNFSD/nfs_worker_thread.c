@@ -276,12 +276,19 @@ const nfs_function_desc_t nfs4_func_desc[] = {
 	 .funcname = "nfs_null",
 	 .dispatch_behaviour = NOTHING_SPECIAL},
 	{
-	 .service_function = nfs4_Compound,
+	 .service_function = nfs4_Compound_wrapper,
 	 .free_function = nfs4_Compound_Free,
 	 .xdr_decode_func = (xdrproc_t) xdr_COMPOUND4args,
 	 .xdr_encode_func = (xdrproc_t) xdr_COMPOUND4res,
 	 .funcname = "nfs4_Comp",
-	 .dispatch_behaviour = CAN_BE_DUP}
+	 .dispatch_behaviour = CAN_BE_DUP},
+	{
+         .service_function = nfs4_Transaction_wrapper,
+         .free_function = nfs4_Compound_Free,
+         .xdr_decode_func = (xdrproc_t) xdr_COMPOUND4args,
+         .xdr_encode_func = (xdrproc_t) xdr_COMPOUND4res,
+         .funcname = "nfs4_Trans",
+         .dispatch_behaviour = CAN_BE_DUP}
 };
 
 const nfs_function_desc_t mnt1_func_desc[] = {
